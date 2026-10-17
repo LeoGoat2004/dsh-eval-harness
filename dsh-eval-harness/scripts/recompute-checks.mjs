@@ -4,8 +4,9 @@
 // workspace and rewrites checks.json, leaving traces untouched.
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { loadAiderBenchmark } from '../packages/dsh-eval-harness/lib/benchmark/aider.js'
-import { runVerifier } from '../packages/dsh-eval-harness/lib/run/verify.js'
+import { builtinManifestPath, loadManifest } from '../packages/dsh-eval-harness/lib/benchmark/manifest.js'
+import { loadBenchmarkFromManifest } from '../packages/dsh-eval-harness/lib/benchmark/interpreter.js'
+import { runManifestVerifier } from '../packages/dsh-eval-harness/lib/run/verify.js'
 
 const args = parseArgs(process.argv.slice(2))
 if (args.run === undefined) {
@@ -18,7 +19,10 @@ const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'))
 const benchmarkRoot = resolve(
   args['benchmark-root'] ?? join(workspaceRoot, '..', 'benchmarks', 'aider-polyglot'),
 )
-const benchmark = await loadAiderBenchmark(
+const manifestPath = args.manifest ?? run.manifestPath ?? builtinManifestPath('aider-polyglot')
+const loaded = loadManifest(manifestPath)
+const benchmark = await loadBenchmarkFromManifest(
+  loaded,
   benchmarkRoot,
   run.language,
   run.tasks,
@@ -44,7 +48,7 @@ for (const directory of taskDirs) {
     console.error('recompute-checks: workspace missing for ' + directory)
     continue
   }
-  const verify = runVerifier({ task: taskInfo, workspaceDir, taskDir, timeoutMs: 120_000 })
+  const verify = runManifestVerifier({ manifest: loaded.manifest, task: taskInfo, workspaceDir, taskDir, timeoutMs: 120_000 })
   writeFileSync(join(taskDir, 'checks.json'), JSON.stringify(verify, null, 2) + '\n')
   updated += 1
   console.log(

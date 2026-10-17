@@ -3,7 +3,7 @@ import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { benchmarkEnvironment } from '../benchmark/registry.ts'
+import { loadManifest, manifestRequirements } from '../benchmark/manifest.ts'
 import { credentialPresent } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
 import { auditHarnessProfile } from '../run/environment-audit.ts'
@@ -62,7 +62,11 @@ export function createEvalPreflightTool(): ToolDefinition {
       dshVersion: { type: 'string', required: true, description: '被测 harness 的 dsh 版本' },
       provider: { type: 'string', required: true, description: '模型 provider，如 siliconflow / deepseek-official' },
       model: { type: 'string', required: true, description: '模型 id，如 Qwen/Qwen3-8B / deepseek-flash' },
-      benchmark: { type: 'string', required: true, description: 'benchmark 名称，如 aider-polyglot' },
+      manifestPath: {
+        type: 'string',
+        required: true,
+        description: 'benchmark manifest 的绝对路径（环境需求以它为准）',
+      },
       language: { type: 'string', required: true, description: '语言轨道，如 python' },
       revision: { type: 'string', required: true, description: 'benchmark 的 pinned revision' },
       tasks: { type: 'array', required: true, items: { type: 'string' }, description: '显式任务列表' },
@@ -197,17 +201,18 @@ export function createEvalPreflightTool(): ToolDefinition {
         readonly dshVersion: string
         readonly provider: string
         readonly model: string
-        readonly benchmark: string
+        readonly manifestPath: string
         readonly language: string
         readonly revision: string
         readonly tasks: readonly string[]
       }
       const profileDir = resolveProfileDir(input.harnessProfile)
       const target = resolveModelTarget(profileDir, input.provider, input.model)
-      const declared = benchmarkEnvironment(input.benchmark, input.language)
-      const probe = probeRequirements(declared.requirements)
+      const manifest = loadManifest(input.manifestPath).manifest
+      const requirements = manifestRequirements(manifest)
+      const probe = probeRequirements(requirements)
       const probeById = new Map(probe.map((item) => [item.id, item]))
-      const missing = declared.requirements
+      const missing = requirements
         .filter((requirement) => probeById.get(requirement.id)?.ok !== true)
         .map((requirement) => ({
           id: requirement.id,
@@ -228,14 +233,14 @@ export function createEvalPreflightTool(): ToolDefinition {
             apiKeyEnv: target.apiKeyEnv,
           },
           benchmark: {
-            name: declared.benchmark,
-            language: declared.language,
+            name: manifest.name,
+            language: input.language,
             revision: input.revision,
             tasks: [...input.tasks],
           },
         },
         ready,
-        requirements: declared.requirements.map((requirement) => ({
+        requirements: requirements.map((requirement) => ({
           id: requirement.id,
           command: [requirement.command, ...requirement.args],
           reason: requirement.reason,
@@ -249,14 +254,14 @@ export function createEvalPreflightTool(): ToolDefinition {
           notes: [...audit.notes],
         },
         notes: [
-          ...declared.notes,
+          ...[],
           ...(target.listed ? [] : ['模型未在 profile 的 provider models 中列出，按显式指定使用']),
           ...(audit.clean ? [] : ['环境审计发现宿主泄漏风险，见 harnessAudit.checks']),
         ],
         confirmation:
           '三件事已确定：harness=' + input.dshVersion + ' @ ' + profileDir +
           '；model=' + target.provider + '/' + target.model +
-          '；benchmark=' + declared.benchmark + '/' + declared.language + ' @ ' + input.revision +
+          '；benchmark=' + manifest.name + '/' + input.language + ' @ ' + input.revision +
           '（' + input.tasks.length + ' 个任务）。',
         next: ready
           ? '把 plan 逐项呈现给用户，请用户确认 harness / model / benchmark 三项；用户确认后再开始评测。'

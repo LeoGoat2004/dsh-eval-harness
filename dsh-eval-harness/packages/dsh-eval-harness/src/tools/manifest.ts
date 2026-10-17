@@ -162,7 +162,7 @@ export function createEvalManifestTool(): ToolDefinition {
           reason: requirement.reason,
         })),
         promptFiles: manifest.prompt.files.map((file) => file.path),
-        verifyCommand: [...manifest.verify.command],
+        verifyCommand: manifest.verify === undefined ? [] : [...manifest.verify.command],
         notes: ['contract only: environment provisioning is left to the Harness, the agent or the user'],
       }
       if (input.benchmarkRoot !== undefined && (input.tasks ?? []).length > 0) {

@@ -10,15 +10,6 @@
     "benchmark",
     "agent-diagnostics"
   ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/LeoGoat2004/dsh-eval-harness.git",
-    "directory": "dsh-eval-harness"
-  },
-  "homepage": "https://github.com/LeoGoat2004/dsh-eval-harness#readme",
-  "bugs": {
-    "url": "https://github.com/LeoGoat2004/dsh-eval-harness/issues"
-  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

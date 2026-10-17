@@ -9,7 +9,7 @@ Harness、benchmark 还是环境的问题。
 ## 安装
 
 ```bash
-git clone https://github.com/LeoGoat2004/dsh-eval-harness.git
+git clone <repository-url>
 cd dsh-eval-harness
 npm --prefix dsh-eval-harness install
 npm --prefix dsh-eval-harness run build
@@ -28,7 +28,8 @@ dsh plugin --profile <profile> add ./dsh-eval-harness
 
 - DSH `0.2.x`，Node.js `>= 20`
 - DSH profile 里已经配置好要评测的模型 provider
-- 本地有 benchmark 检出；它需要的运行环境由 benchmark 自己的定义声明，运行前由插件检查
+- 有一个由声明式 manifest 描述的 benchmark（host 或 container 执行）；环境要求由 manifest 声明，
+  运行前由插件检查
 
 ## 许可证
 

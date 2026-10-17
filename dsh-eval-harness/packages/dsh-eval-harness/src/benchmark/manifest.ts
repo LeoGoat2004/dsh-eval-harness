@@ -19,10 +19,13 @@ export interface BenchmarkManifest {
   /** Declarative task discovery. */
   readonly tasks: {
     readonly discovery: 'directory'
-    /** Directory template; `{{language}}` is replaced with the run's language. */
+    /** Directory template; `{{language}}` is substituted when present. */
     readonly root: string
-    /** Where per-task metadata lives and which JSON fields name the files. */
-    readonly meta: {
+    /**
+     * Optional per-task metadata mapping. Omitted means the task has no
+     * declared solution/test files (container execution grades itself).
+     */
+    readonly meta?: {
       readonly file: string
       readonly solutionFiles: string
       readonly testFiles: string
@@ -32,12 +35,15 @@ export interface BenchmarkManifest {
   }
   /** How the prompt is assembled from task files plus a wrapper template. */
   readonly prompt: {
-    /** Ordered prompt files; `optional: true` files may be missing. */
-    readonly files: readonly { readonly path: string; readonly optional?: boolean }[]
+    /**
+     * Ordered prompt sources. `optional: true` sources may be missing; `field`
+     * extracts one top-level YAML field instead of reading the whole file.
+     */
+    readonly files: readonly { readonly path: string; readonly optional?: boolean; readonly field?: string }[]
     readonly template: string
   }
-  /** How the benchmark verifies a workspace. */
-  readonly verify: {
+  /** How the benchmark verifies a workspace on the host; omitted in container mode. */
+  readonly verify?: {
     readonly command: readonly string[]
     readonly result: 'junitxml'
   }
@@ -64,6 +70,8 @@ export interface BenchmarkManifest {
       readonly tracePath?: string
       /** Mount the host task workspace into `workspace` (default true). */
       readonly mountWorkspace?: boolean
+      /** Mount the run's private DSH_HOME at `/dsh-home` (default false). */
+      readonly mountDshHome?: boolean
       /** Extra mounts (templated). `source` is a host path. */
       readonly mounts?: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[]
       /** Container environment (templated; `{{env:NAME}}` reads the host env). */
@@ -72,6 +80,8 @@ export interface BenchmarkManifest {
       readonly agentCommand: readonly string[]
       /** Grading command inside the same container (templated). */
       readonly verifyCommand: readonly string[]
+      /** How to read grading output: junitxml (default), pytest text, or exit code only. */
+      readonly verifyResult?: 'junitxml' | 'pytest-text' | 'exit-code'
     }
   }
   /** Requirements the environment must satisfy; the plugin only probes them. */
@@ -106,7 +116,7 @@ export function loadManifest(path: string): LoadedBenchmarkManifest {
 
 /**
  * Locate a manifest shipped with the package.
- * @param name - preset name, e.g. `aider-polyglot`.
+ * @param name - preset name (file name without extension, e.g. the shipped preset).
  * @returns absolute path of the preset manifest.
  */
 export function builtinManifestPath(name: string): string {
@@ -150,30 +160,48 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
     throw new Error('manifest(' + path + '): tasks.discovery must be "directory"')
   }
   const tasksRoot = requireString(tasks.root, 'tasks.root')
-  if (!tasksRoot.includes('{{language}}')) {
-    throw new Error('manifest(' + path + '): tasks.root must contain {{language}} so one manifest serves every track')
-  }
-  const meta = requireObject(tasks.meta, 'tasks.meta')
+  const meta =
+    tasks.meta === undefined
+      ? undefined
+      : (() => {
+          const value = requireObject(tasks.meta, 'tasks.meta')
+          return {
+            file: requireString(value.file, 'tasks.meta.file'),
+            solutionFiles: requireString(value.solutionFiles, 'tasks.meta.solutionFiles'),
+            testFiles: requireString(value.testFiles, 'tasks.meta.testFiles'),
+          }
+        })()
   const prompt = requireObject(root.prompt, 'prompt')
-  const promptFiles = requireArray(prompt.files, 'prompt.files').map((item, index): { path: string; optional?: boolean } => {
+  const promptFiles = requireArray(prompt.files, 'prompt.files').map((item, index) => {
     const entry = requireObject(item, 'prompt.files[' + String(index) + ']')
     const optional = entry.optional === true ? { optional: true } : {}
-    return { path: requireString(entry.path, 'prompt.files[' + String(index) + '].path'), ...optional }
+    const field = entry.field === undefined ? {} : { field: requireString(entry.field, 'prompt.files[' + String(index) + '].field') }
+    return { path: requireString(entry.path, 'prompt.files[' + String(index) + '].path'), ...optional, ...field }
   })
   const template = requireString(prompt.template, 'prompt.template')
   if (!template.includes('{{prompt}}')) {
     throw new Error('manifest(' + path + '): prompt.template must contain {{prompt}}')
   }
-  if (!template.includes('{{solutionFiles}}')) {
-    throw new Error('manifest(' + path + '): prompt.template must contain {{solutionFiles}}')
+  if (meta !== undefined && !template.includes('{{solutionFiles}}')) {
+    throw new Error('manifest(' + path + '): prompt.template must contain {{solutionFiles}} when tasks.meta is declared')
   }
-  const verify = requireObject(root.verify, 'verify')
-  const command = requireStringArray(verify.command, 'verify.command')
-  if (!command.some((part) => part.includes('{{testFiles}}'))) {
-    throw new Error('manifest(' + path + '): verify.command must reference {{testFiles}}')
-  }
-  if (verify.result !== 'junitxml') {
-    throw new Error('manifest(' + path + '): verify.result must be "junitxml"')
+  const execution = validateExecution(root.execution, path)
+  const verify =
+    root.verify === undefined
+      ? undefined
+      : (() => {
+          const value = requireObject(root.verify, 'verify')
+          const command = requireStringArray(value.command, 'verify.command')
+          if (meta !== undefined && !command.some((part) => part.includes('{{testFiles}}'))) {
+            throw new Error('manifest(' + path + '): verify.command must reference {{testFiles}} when tasks.meta is declared')
+          }
+          if (value.result !== 'junitxml') {
+            throw new Error('manifest(' + path + '): verify.result must be "junitxml"')
+          }
+          return { command, result: 'junitxml' as const }
+        })()
+  if (verify === undefined && execution?.kind !== 'container') {
+    throw new Error('manifest(' + path + '): verify is required for host execution')
   }
   const environment = requireObject(root.environment, 'environment')
   const requirements = requireArray(environment.requirements, 'environment.requirements').map(
@@ -194,22 +222,17 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
     throw new Error('manifest(' + path + '): requirement ids must be unique')
   }
   const reference = validateReference(root.reference, path)
-  const execution = validateExecution(root.execution, path)
   return {
     schema: 1,
     name,
     tasks: {
       discovery: 'directory',
       root: tasksRoot,
-      meta: {
-        file: requireString(meta.file, 'tasks.meta.file'),
-        solutionFiles: requireString(meta.solutionFiles, 'tasks.meta.solutionFiles'),
-        testFiles: requireString(meta.testFiles, 'tasks.meta.testFiles'),
-      },
+      ...(meta === undefined ? {} : { meta }),
       exclude: requireStringArray(tasks.exclude, 'tasks.exclude'),
     },
     prompt: { files: promptFiles, template },
-    verify: { command, result: 'junitxml' },
+    ...(verify === undefined ? {} : { verify }),
     ...(reference === undefined ? {} : { reference }),
     ...(execution === undefined ? {} : { execution }),
     environment: { requirements },
@@ -260,12 +283,27 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
       ...(container.mountWorkspace === undefined
         ? {}
         : { mountWorkspace: container.mountWorkspace === true }),
+      ...(container.mountDshHome === undefined
+        ? {}
+        : { mountDshHome: container.mountDshHome === true }),
       ...(mounts === undefined ? {} : { mounts }),
       ...(env === undefined ? {} : { env }),
       agentCommand: requireStringArray(container.agentCommand, 'execution.container.agentCommand'),
       verifyCommand: requireStringArray(container.verifyCommand, 'execution.container.verifyCommand'),
+      ...(container.verifyResult === undefined
+        ? {}
+        : { verifyResult: requireVerifyResult(container.verifyResult) }),
     },
   }
+}
+
+const VERIFY_RESULTS = new Set<string>(['junitxml', 'pytest-text', 'exit-code'])
+
+function requireVerifyResult(value: unknown): 'junitxml' | 'pytest-text' | 'exit-code' {
+  if (typeof value !== 'string' || !VERIFY_RESULTS.has(value)) {
+    throw new Error('manifest: execution.container.verifyResult must be junitxml, pytest-text or exit-code')
+  }
+  return value as 'junitxml' | 'pytest-text' | 'exit-code'
 }
 
 /** Validate the optional green-verification reference block. */

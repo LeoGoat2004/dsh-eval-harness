@@ -1,7 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AiderTask } from '../benchmark/aider.ts'
 import type { BenchmarkTask } from '../benchmark/interpreter.ts'
 import type { BenchmarkManifest } from '../benchmark/manifest.ts'
 import { renderTemplate } from '../benchmark/manifest.ts'
@@ -48,13 +47,17 @@ export function runManifestVerifier(options: {
   }
   const junitPath = join(verifyDir, 'junit.xml')
   const logPath = join(verifyDir, 'verifier.log')
+  const verify = options.manifest.verify
+  if (verify === undefined) {
+    return { ok: false, passed: 0, total: 0, checks: [], logPath, error: 'verifier: manifest declares no host verify command' }
+  }
   const vars = {
     language: options.task.language,
     junitPath,
     testFiles: options.task.testFiles.join(' '),
   }
   const args: string[] = []
-  for (const token of options.manifest.verify.command) {
+  for (const token of verify.command) {
     if (token === '{{testFiles}}') {
       args.push(...options.task.testFiles)
       continue
@@ -102,7 +105,7 @@ export function runManifestVerifier(options: {
  * @returns parsed per-test checks plus the raw log path.
  */
 export function runVerifier(options: {
-  readonly task: AiderTask
+  readonly task: BenchmarkTask
   readonly workspaceDir: string
   readonly taskDir: string
   readonly timeoutMs: number

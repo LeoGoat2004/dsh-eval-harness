@@ -1,4 +1,4 @@
-// Pipeline self-check without model calls.
+﻿// Pipeline self-check without model calls.
 //
 // Runs the real evaluation pipeline with a stub `dsh` launcher that exits
 // immediately, so preflight, environment recording, artifact layout and the
@@ -52,6 +52,7 @@ try {
     language: 'python',
     taskIds: ['transpose'],
     dshBin: stubLauncher,
+    manifestPath: builtinManifestPath('aider-polyglot'),
     dshVersion: readDshVersion(realDsh),
     outputDir: join(workDir, 'runs'),
     profileName: 'eval-pipeline-check',
@@ -291,7 +292,8 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
     const result = runContainerEpisode({
       manifest: loadedFixture.manifest,
       task: fixtureTask,
-      taskDir: fixtureTask.exerciseDir,
+      taskDir: join(episodeDir, 'task-artifacts'),
+      taskSourceDir: fixtureTask.exerciseDir,
       workspaceDir: join(episodeDir, 'workspace'),
       traceDir: join(episodeDir, 'trace'),
       verifyDir: join(episodeDir, 'verify'),
@@ -314,6 +316,7 @@ try {
     language: 'python',
     taskIds: ['transpose'],
     dshBin: stubLauncher,
+    manifestPath: builtinManifestPath('aider-polyglot'),
     dshVersion: readDshVersion(realDsh),
     outputDir: join(workDir, 'runs-refused'),
     profileName: 'eval-pipeline-check',
@@ -336,4 +339,5 @@ if (failures.length > 0) {
   process.exit(1)
 }
 console.log('PIPELINE SELF-CHECK OK (preflight, environment facts, artifacts, refusal path)')
+
 

@@ -142,7 +142,7 @@ if (preflight === undefined) {
     dshVersion: 'self-check',
     provider: 'siliconflow',
     model: 'Qwen/Qwen3-8B',
-    benchmark: 'aider-polyglot',
+    manifestPath: builtinManifestPath('aider-polyglot'),
     language: 'python',
     revision: 'self-check',
     tasks: ['transpose'],
@@ -173,11 +173,11 @@ if (preflight === undefined) {
     }
     let rejectedBenchmark = false
     try {
-      await preflight.execute({ ...planArgs, benchmark: 'unknown-benchmark' }, {})
+      await preflight.execute({ ...planArgs, manifestPath: join(tmpdir(), 'dsh-eval-missing-manifest.yml') }, {})
     } catch {
       rejectedBenchmark = true
     }
-    if (!rejectedBenchmark) failures.push('eval_preflight must reject unsupported benchmarks')
+    if (!rejectedBenchmark) failures.push('eval_preflight must reject a missing manifest')
     let rejectedProvider = false
     try {
       await preflight.execute({ ...planArgs, provider: 'missing-provider' }, {})

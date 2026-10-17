@@ -9,7 +9,7 @@ failed and whether the cause was the model, the Harness, the benchmark, or the e
 ## Install
 
 ```bash
-git clone https://github.com/LeoGoat2004/dsh-eval-harness.git
+git clone <repository-url>
 cd dsh-eval-harness
 npm --prefix dsh-eval-harness install
 npm --prefix dsh-eval-harness run build
@@ -30,7 +30,8 @@ agent runs the evaluation and the report is written to `runs/<run-id>/dashboard/
 
 - DSH `0.2.x`, Node.js `>= 20`
 - A DSH profile with the model provider you want to evaluate already configured
-- A local benchmark checkout; its runtime prerequisites are declared by the benchmark definition and checked before a run
+- A benchmark described by a declarative manifest (host or container execution); its environment
+  requirements are declared by the manifest and checked before a run
 
 ## License
 

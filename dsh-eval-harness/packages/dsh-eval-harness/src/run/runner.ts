@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadBenchmarkFromManifest } from '../benchmark/interpreter.ts'
-import { builtinManifestPath, loadManifest } from '../benchmark/manifest.ts'
+import { loadManifest } from '../benchmark/manifest.ts'
 import {
   buildPrompt,
   findSessionLog,
@@ -41,8 +41,8 @@ export interface RunSpec {
   readonly env: NodeJS.ProcessEnv
   /** Confirmed model target: pinned into the eval profile and verified from the trace. */
   readonly model: ModelTarget
-  /** Optional declarative benchmark manifest; omitted uses the built-in preset. */
-  readonly manifestPath?: string
+  /** Declarative benchmark manifest; every run names its benchmark explicitly. */
+  readonly manifestPath: string
   /** Explicit circuit-breaker limits for each episode. */
   readonly guard: LoopGuardLimits
 }
@@ -94,16 +94,8 @@ export interface RunSummary {
 export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   validateSpec(spec)
   const startedAt = Date.now()
-  const runId = createRunId(spec)
-  const runDir = join(spec.outputDir, runId)
-  mkdirSync(join(runDir, 'tasks'), { recursive: true })
-  const dshHome = join(runDir, 'dsh-home')
-  const profile = materializeProfile(dshHome, spec.profileName, spec.model)
 
-  const loadedManifest =
-    spec.manifestPath !== undefined
-      ? loadManifest(spec.manifestPath)
-      : loadManifest(builtinManifestPath('aider-polyglot'))
+  const loadedManifest = loadManifest(spec.manifestPath)
   const benchmark = await loadBenchmarkFromManifest(
     loadedManifest,
     spec.benchmarkRoot,
@@ -111,6 +103,11 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     spec.taskIds,
     spec.benchmarkRevision,
   )
+  const runId = createRunId(spec, benchmark.name)
+  const runDir = join(spec.outputDir, runId)
+  mkdirSync(join(runDir, 'tasks'), { recursive: true })
+  const dshHome = join(runDir, 'dsh-home')
+  const profile = materializeProfile(dshHome, spec.profileName, spec.model)
 
   // Environment facts are part of the result: a lab-side failure must never be
   // reported as a DSH defect. Preflight fails fast when the environment is not
@@ -129,7 +126,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
         images.add(
           renderContainerValue(
             containerExecution.image,
-            containerVars(loadedManifest.manifest, task, { taskDir: task.exerciseDir, traceDir: '' }),
+            containerVars(loadedManifest.manifest, task, { taskDir: task.exerciseDir, artifactDir: '', traceDir: '' }),
           ),
         )
       }
@@ -195,14 +192,32 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     if (containerExecution !== null) {
       if (containerExecution.mountWorkspace !== false) prepareWorkspace(task, workspaceDir)
       else mkdirSync(workspaceDir, { recursive: true })
+      // The trace directory is mounted into the container; point the session
+      // writer at the container-side path so JSONL lands on the host mount.
+      mkdirSync(traceDir, { recursive: true })
+      writeFileSync(
+        join(traceDir, 'overlay.yml'),
+        [
+          '- id: session-persistence-jsonl',
+          "  name: '@deepseek-ai/dsh-session-persistence-jsonl'",
+          '  config:',
+          "    root: '" + (containerExecution.tracePath ?? '/trace') + "'",
+          '    compression: none',
+          '',
+        ].join('\n'),
+      )
       const containerEpisode = runContainerEpisode({
         manifest: loadedManifest.manifest,
         task,
         taskDir,
+        taskSourceDir: task.exerciseDir,
         workspaceDir,
         traceDir,
         verifyDir: join(taskDir, 'verify'),
         promptFile: join(taskDir, 'prompt.md'),
+        dshHome,
+        profileName: profile.profileName,
+        runEnv: spec.env,
         timeoutMs: spec.timeoutMs,
         logPath: join(taskDir, 'agent', 'container.log'),
       })
@@ -340,9 +355,9 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
 }
 
 /** Build the run id: benchmark, language, task count, UTC timestamp. */
-function createRunId(spec: RunSpec): string {
+function createRunId(spec: RunSpec, benchmarkName: string): string {
   const stamp = new Date().toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z')
-  return 'aider-polyglot__' + spec.language + spec.taskIds.length + '__' + stamp
+  return benchmarkName.toLowerCase().replace(/[^a-z0-9]+/gu, '-') + '__' + spec.language + spec.taskIds.length + '__' + stamp
 }
 
 function summarize(summaries: readonly TaskSummary[], durationMs: number): RunSummary['totals'] {
@@ -587,3 +602,5 @@ export function readDshVersion(dshBin: string): string {
   const parsed = JSON.parse(manifest) as { version?: unknown }
   return typeof parsed.version === 'string' ? parsed.version : 'unknown'
 }
+
+

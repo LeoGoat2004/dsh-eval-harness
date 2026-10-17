@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { parse } from 'yaml'
 import type { EnvironmentRequirement } from '../run/environment.ts'
 import {
   manifestRequirements,
@@ -71,11 +72,15 @@ export async function loadBenchmarkFromManifest(
       throw new Error('benchmark: unknown ' + language + ' task "' + id + '" under ' + taskRoot)
     }
     const exerciseDir = join(taskRoot, id)
-    const meta = JSON.parse(await readFile(join(exerciseDir, manifest.tasks.meta.file), 'utf8')) as unknown
-    const solutionFiles = readStringArray(meta, manifest.tasks.meta.solutionFiles)
-    const testFiles = readStringArray(meta, manifest.tasks.meta.testFiles)
-    if (solutionFiles.length === 0 || testFiles.length === 0) {
-      throw new Error('benchmark: task "' + id + '" declares no solution or test files')
+    let solutionFiles: readonly string[] = []
+    let testFiles: readonly string[] = []
+    if (manifest.tasks.meta !== undefined) {
+      const meta = JSON.parse(await readFile(join(exerciseDir, manifest.tasks.meta.file), 'utf8')) as unknown
+      solutionFiles = readStringArray(meta, manifest.tasks.meta.solutionFiles)
+      testFiles = readStringArray(meta, manifest.tasks.meta.testFiles)
+      if (solutionFiles.length === 0 || testFiles.length === 0) {
+        throw new Error('benchmark: task "' + id + '" declares no solution or test files')
+      }
     }
     const promptBody = await readPromptFiles(exerciseDir, manifest.prompt.files)
     const prompt = renderTemplate(manifest.prompt.template, {
@@ -117,19 +122,34 @@ function readStringArray(value: unknown, dottedPath: string): readonly string[] 
   return current.filter((item): item is string => typeof item === 'string' && item !== '')
 }
 
-/** Read prompt files in order; only explicitly optional files may be missing. */
+/** Read prompt files in order; `field` extracts one top-level YAML field. */
 async function readPromptFiles(
   taskDir: string,
   files: LoadedBenchmarkManifest['manifest']['prompt']['files'],
 ): Promise<string> {
   const parts: string[] = []
   for (const file of files) {
+    let text: string
     try {
-      parts.push((await readFile(join(taskDir, file.path), 'utf8')).trim())
+      text = await readFile(join(taskDir, file.path), 'utf8')
     } catch (error) {
       if (file.optional === true) continue
       throw new Error('benchmark: prompt file ' + file.path + ' is missing in ' + taskDir + ': ' + String(error))
     }
+    if (file.field !== undefined) {
+      const parsed = parse(text) as unknown
+      const value =
+        parsed !== null && typeof parsed === 'object'
+          ? (parsed as Record<string, unknown>)[file.field]
+          : undefined
+      if (typeof value !== 'string' || value.trim() === '') {
+        if (file.optional === true) continue
+        throw new Error('benchmark: prompt field ' + file.field + ' is empty in ' + join(taskDir, file.path))
+      }
+      parts.push(value.trim())
+      continue
+    }
+    parts.push(text.trim())
   }
   return parts.filter((part) => part !== '').join('\n\n')
 }

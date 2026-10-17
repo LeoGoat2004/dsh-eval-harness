@@ -19,7 +19,6 @@ const requireArg = (name, value) => {
 
 const workspaceRoot = resolve(import.meta.dirname, '..')
 const benchmarkRoot = resolve(requireArg('benchmark-root', args['benchmark-root']))
-const benchmark = requireArg('benchmark', args.benchmark)
 const taskIds = requireArg('tasks', args.tasks)
   .split(',')
   .map((value) => value.trim())
@@ -39,6 +38,7 @@ if (permissionMode !== 'workspace-write' && permissionMode !== 'danger-full-acce
 const outputDir = resolve(args.out ?? join(workspaceRoot, '..', 'runs'))
 const dshBin = resolve(args['dsh-bin'] ?? join(workspaceRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))
 const profileName = args.profile ?? 'eval-m1'
+const manifestPath = resolve(requireArg('manifest', args.manifest))
 
 const harnessProfileArg = requireArg('harness-profile', args['harness-profile'])
 const harnessProfile = existsSync(harnessProfileArg)
@@ -47,12 +47,12 @@ const harnessProfile = existsSync(harnessProfileArg)
 const provider = requireArg('provider', args.provider)
 const modelId = requireArg('model', args.model)
 
-if (benchmark !== 'aider-polyglot') {
-  console.error('run-eval: unsupported --benchmark "' + benchmark + '" (supported: aider-polyglot)')
-  process.exit(2)
-}
 if (!existsSync(harnessProfile)) {
   console.error('run-eval: harness profile not found: ' + harnessProfile)
+  process.exit(2)
+}
+if (!existsSync(manifestPath)) {
+  console.error('run-eval: manifest not found: ' + manifestPath)
   process.exit(2)
 }
 if (!existsSync(benchmarkRoot)) {
@@ -84,6 +84,7 @@ childEnv.DSH_PERMISSION_MODE = permissionMode
 const summary = await runEvaluation({
   benchmarkRoot,
   benchmarkRevision: revision,
+  manifestPath,
   language,
   taskIds,
   dshBin,

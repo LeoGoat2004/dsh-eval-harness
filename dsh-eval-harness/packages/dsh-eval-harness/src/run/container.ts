@@ -75,8 +75,14 @@ export function containerImageCheck(image: string): ContainerCheck {
  * @param vars - per-task variables.
  * @returns rendered string.
  */
-export function renderContainerValue(value: string, vars: Readonly<Record<string, string>>): string {
-  const withEnv = value.replace(/\{\{\s*env:([A-Za-z0-9_]+)\s*\}\}/gu, (_match, name: string) => process.env[name] ?? '')
+export function renderContainerValue(
+  value: string,
+  vars: Readonly<Record<string, string>>,
+  runEnv: NodeJS.ProcessEnv = process.env,
+): string {
+  const withEnv = value
+    .replace(/\{\{\s*env:([A-Za-z0-9_]+)\s*\}\}/gu, (_match, name: string) => process.env[name] ?? '')
+    .replace(/\{\{\s*runEnv:([A-Za-z0-9_]+)\s*\}\}/gu, (_match, name: string) => runEnv[name] ?? '')
   return renderTemplate(withEnv, vars)
 }
 
@@ -84,20 +90,31 @@ export function renderContainerValue(value: string, vars: Readonly<Record<string
 export function containerVars(
   manifest: BenchmarkManifest,
   task: BenchmarkTask,
-  paths: { taskDir: string; traceDir: string },
+  paths: {
+    taskDir: string
+    artifactDir: string
+    traceDir: string
+    dshHome?: string
+    profileName?: string
+  },
 ): Record<string, string> {
   const container = manifest.execution?.container
+  const tracePath = container?.tracePath ?? '/trace'
   return {
     name: manifest.name,
     language: task.language,
     taskId: task.id,
     taskDir: paths.taskDir,
+    artifactDir: paths.artifactDir,
     workspace: container?.workspace ?? '/app',
-    tracePath: container?.tracePath ?? '/trace',
+    tracePath,
+    overlayFile: tracePath + '/overlay.yml',
     promptFile: CONTAINER_PATHS.promptFile,
     verifyDir: CONTAINER_PATHS.verifyDir,
     junitPath: CONTAINER_PATHS.junitPath,
     hostTraceDir: paths.traceDir,
+    ...(paths.dshHome === undefined ? {} : { dshHome: paths.dshHome }),
+    ...(paths.profileName === undefined ? {} : { profileName: paths.profileName }),
   }
 }
 
@@ -111,25 +128,33 @@ export function runContainerEpisode(options: {
   readonly manifest: BenchmarkManifest
   readonly task: BenchmarkTask
   readonly taskDir: string
+  readonly taskSourceDir: string
   readonly workspaceDir: string
   readonly traceDir: string
   readonly verifyDir: string
   readonly promptFile: string
+  readonly dshHome?: string
+  readonly profileName?: string
+  readonly runEnv?: NodeJS.ProcessEnv
   readonly timeoutMs: number
   readonly logPath: string
 }): ContainerEpisodeResult {
   const container = options.manifest.execution?.container
   if (container === undefined) throw new Error('container execution: manifest has no execution.container block')
+  const runEnv = options.runEnv ?? process.env
   mkdirSync(options.workspaceDir, { recursive: true })
   mkdirSync(options.traceDir, { recursive: true })
   mkdirSync(options.verifyDir, { recursive: true })
   const vars = containerVars(options.manifest, options.task, {
-    taskDir: options.taskDir,
+    taskDir: options.taskSourceDir,
+    artifactDir: options.taskDir,
     traceDir: options.traceDir,
+    ...(options.dshHome === undefined ? {} : { dshHome: options.dshHome }),
+    ...(options.profileName === undefined ? {} : { profileName: options.profileName }),
   })
   const tracePath = container.tracePath ?? '/trace'
   const renderCommand = (command: readonly string[]): string =>
-    command.map((token) => shellQuote(renderContainerValue(token, vars))).join(' ')
+    command.map((token) => shellQuote(renderContainerValue(token, vars, runEnv))).join(' ')
   const runScript = join(options.verifyDir, 'run.sh')
   writeFileSync(
     runScript,
@@ -152,14 +177,18 @@ export function runContainerEpisode(options: {
   if (container.mountWorkspace !== false) {
     mounts.push('-v', options.workspaceDir + ':' + container.workspace)
   }
+  if (container.mountDshHome === true) {
+    if (options.dshHome === undefined) throw new Error('container execution: mountDshHome requires a dshHome')
+    mounts.push('-v', options.dshHome + ':/dsh-home')
+  }
   for (const mount of container.mounts ?? []) {
-    const source = renderContainerValue(mount.source, vars)
-    const target = renderContainerValue(mount.target, vars)
+    const source = renderContainerValue(mount.source, vars, runEnv)
+    const target = renderContainerValue(mount.target, vars, runEnv)
     mounts.push('-v', source + ':' + target + (mount.readOnly === true ? ':ro' : ''))
   }
   const envArgs: string[] = []
   for (const entry of container.env ?? []) {
-    envArgs.push('-e', renderContainerValue(entry.name, vars) + '=' + renderContainerValue(entry.value, vars))
+    envArgs.push('-e', renderContainerValue(entry.name, vars, runEnv) + '=' + renderContainerValue(entry.value, vars, runEnv))
   }
   const started = Date.now()
   const result = spawnSync(
@@ -169,7 +198,7 @@ export function runContainerEpisode(options: {
       ...mounts,
       ...envArgs,
       '-w', container.workspace,
-      renderContainerValue(container.image, vars),
+      renderContainerValue(container.image, vars, runEnv),
       'bash', CONTAINER_PATHS.runScript,
     ],
     { encoding: 'utf8', timeout: options.timeoutMs, windowsHide: true },
@@ -186,11 +215,38 @@ export function runContainerEpisode(options: {
     log,
     agentExit,
     verifyExit,
-    verify: readVerifier(options.verifyDir),
+    verify: readVerifier(options.verifyDir, container.verifyResult ?? 'junitxml', verifyExit, log),
   }
 }
 
-function readVerifier(verifyDir: string): VerifyResult {
+function readVerifier(
+  verifyDir: string,
+  format: 'junitxml' | 'pytest-text' | 'exit-code',
+  verifyExit: number | null,
+  log: string,
+): VerifyResult {
+  if (format === 'exit-code') {
+    return {
+      ok: verifyExit === 0,
+      passed: 0,
+      total: 0,
+      checks: [],
+      logPath: verifyDir,
+    }
+  }
+  if (format === 'pytest-text') {
+    const passed = Number(/(\d+) passed/u.exec(log)?.[1] ?? '0')
+    const failed = Number(/(\d+) failed/u.exec(log)?.[1] ?? '0')
+    const total = passed + failed
+    return {
+      ok: verifyExit === 0 && passed > 0 && failed === 0,
+      passed,
+      total,
+      checks: [],
+      logPath: verifyDir,
+      ...(total === 0 ? { error: 'verifier: no pytest summary found in container output' } : {}),
+    }
+  }
   const junitPath = join(verifyDir, 'junit.xml')
   if (!existsSync(junitPath)) {
     return { ok: false, passed: 0, total: 0, checks: [], logPath: verifyDir, error: 'verifier: no junit report produced' }

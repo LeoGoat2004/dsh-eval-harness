@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
-import { workspaceExcludes, type AiderTask } from '../benchmark/aider.ts'
+import type { BenchmarkTask } from '../benchmark/interpreter.ts'
 import type { ModelTarget } from '../model/target.ts'
 import { createLoopGuard, type LoopGuardLimits, type LoopGuardTrip } from './guard.ts'
 
@@ -143,9 +143,9 @@ export function writeTaskOverlay(taskDir: string, traceDir: string): string {
  * @param task - task being prepared.
  * @param workspaceDir - absolute destination workspace directory.
  */
-export function prepareWorkspace(task: AiderTask, workspaceDir: string): void {
+export function prepareWorkspace(task: BenchmarkTask, workspaceDir: string): void {
   mkdirSync(workspaceDir, { recursive: true })
-  const excludes = workspaceExcludes(task)
+  const excludes = new Set(task.exclude)
   copyTree(task.exerciseDir, workspaceDir, excludes, '')
 }
 
@@ -154,7 +154,7 @@ export function prepareWorkspace(task: AiderTask, workspaceDir: string): void {
  * @param task - the task to describe.
  * @returns one self-contained prompt.
  */
-export function buildPrompt(task: AiderTask): string {
+export function buildPrompt(task: BenchmarkTask): string {
   return [
     'You are working in a Python repository that contains one programming exercise.',
     '',
