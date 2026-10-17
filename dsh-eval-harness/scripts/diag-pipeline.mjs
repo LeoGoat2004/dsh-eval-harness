@@ -10,6 +10,14 @@ import { join, resolve } from 'node:path'
 import { readDshVersion, runEvaluation } from '../packages/dsh-eval-harness/lib/run/runner.js'
 import { createLoopGuard } from '../packages/dsh-eval-harness/lib/run/guard.js'
 import { parseJunit } from '../packages/dsh-eval-harness/lib/run/verify.js'
+import {
+  builtinManifestPath,
+  loadManifest,
+  manifestRequirements,
+  manifestTaskRoot,
+  renderTemplate,
+} from '../packages/dsh-eval-harness/lib/benchmark/manifest.js'
+import { loadBenchmarkFromManifest } from '../packages/dsh-eval-harness/lib/benchmark/interpreter.js'
 
 const root = resolve(import.meta.dirname, '..')
 const benchmarkRoot = resolve(process.argv[2] ?? join(root, '..', 'benchmarks', 'aider-polyglot'))
@@ -144,6 +152,45 @@ check(
   'junit parser must read the real name attribute instead of the classname suffix',
 )
 check(parsed[1]?.pass === false, 'junit parser must mark a failure element as failed')
+
+// The manifest is the declarative benchmark contract: validate the shipped
+// preset, its template rendering, and that a malformed manifest is rejected.
+const preset = loadManifest(builtinManifestPath('aider-polyglot'))
+check(preset.manifest.name === 'aider-polyglot', 'preset manifest name must load')
+check(
+  manifestTaskRoot(preset.manifest, 'python') === 'python/exercises/practice',
+  'manifest task root must substitute {{language}}',
+)
+check(
+  manifestRequirements(preset.manifest).length === 2,
+  'manifest must declare its environment requirements',
+)
+check(
+  renderTemplate('x {{a}} y', { a: 'A' }) === 'x A y' && renderTemplate('{{missing}}', {}) === '{{missing}}',
+  'manifest template rendering must substitute known keys only',
+)
+const brokenManifest = join(workDir, 'broken-manifest.yml')
+writeFileSync(brokenManifest, 'schema: 2\nname: broken\n')
+let manifestRejected = false
+try {
+  loadManifest(brokenManifest)
+} catch {
+  manifestRejected = true
+}
+check(manifestRejected, 'manifest loader must reject an unsupported schema')
+
+// When a benchmark checkout is available locally, prove the manifest
+// interpreter materializes a real task (prompt, file names, excludes).
+if (existsSync(benchmarkRoot)) {
+  const loadedBenchmark = await loadBenchmarkFromManifest(preset, benchmarkRoot, 'python', ['transpose'], 'self-check')
+  const task = loadedBenchmark.tasks[0]
+  check(loadedBenchmark.name === 'aider-polyglot', 'interpreter must carry the manifest name')
+  check(task?.id === 'transpose', 'interpreter must materialize the requested task id')
+  check(task?.solutionFiles.includes('transpose.py') === true, 'interpreter must read solution files from task meta')
+  check(task?.testFiles.length >= 1, 'interpreter must read test files from task meta')
+  check(task?.exclude.includes(task.testFiles[0]) === true, 'test files must be excluded from the agent workspace')
+  check((task?.prompt.length ?? 0) > 100, 'interpreter must assemble a non-trivial prompt')
+}
 
 // The credential check must refuse to start before any episode runs.
 let refused = false

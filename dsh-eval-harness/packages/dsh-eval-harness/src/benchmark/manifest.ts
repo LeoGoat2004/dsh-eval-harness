@@ -1,0 +1,203 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parse } from 'yaml'
+import type { EnvironmentRequirement } from '../run/environment.ts'
+
+/**
+ * Declarative benchmark contract.
+ *
+ * A manifest describes *what* a benchmark needs and *how* it is judged. It
+ * never describes environment provisioning: the plugin probes
+ * `environment.requirements` and hands the decision of how to satisfy them to
+ * the Harness/agent/user. New benchmarks are added by adding a manifest, not by
+ * editing plugin code.
+ */
+export interface BenchmarkManifest {
+  readonly schema: 1
+  readonly name: string
+  /** Declarative task discovery. */
+  readonly tasks: {
+    readonly discovery: 'directory'
+    /** Directory template; `{{language}}` is replaced with the run's language. */
+    readonly root: string
+    /** Where per-task metadata lives and which JSON fields name the files. */
+    readonly meta: {
+      readonly file: string
+      readonly solutionFiles: string
+      readonly testFiles: string
+    }
+    /** Entries that must not reach the agent workspace. */
+    readonly exclude: readonly string[]
+  }
+  /** How the prompt is assembled from task files plus a wrapper template. */
+  readonly prompt: {
+    /** Ordered prompt files; `optional: true` files may be missing. */
+    readonly files: readonly { readonly path: string; readonly optional?: boolean }[]
+    readonly template: string
+  }
+  /** How the benchmark verifies a workspace. */
+  readonly verify: {
+    readonly command: readonly string[]
+    readonly result: 'junitxml'
+  }
+  /** Requirements the environment must satisfy; the plugin only probes them. */
+  readonly environment: {
+    readonly requirements: readonly EnvironmentRequirement[]
+  }
+}
+
+/** A manifest plus the absolute path it was loaded from. */
+export interface LoadedBenchmarkManifest {
+  readonly path: string
+  readonly manifest: BenchmarkManifest
+}
+
+const MANIFEST_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'presets')
+
+/**
+ * Load and validate one benchmark manifest.
+ * @param path - absolute path of the manifest file.
+ * @returns the validated manifest and its path.
+ */
+export function loadManifest(path: string): LoadedBenchmarkManifest {
+  if (!existsSync(path)) throw new Error('manifest: file not found: ' + path)
+  let parsed: unknown
+  try {
+    parsed = parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    throw new Error('manifest: not valid YAML: ' + String(error))
+  }
+  return { path, manifest: validateManifest(parsed, path) }
+}
+
+/**
+ * Locate a manifest shipped with the package.
+ * @param name - preset name, e.g. `aider-polyglot`.
+ * @returns absolute path of the preset manifest.
+ */
+export function builtinManifestPath(name: string): string {
+  return join(MANIFEST_DIR, name + '.yml')
+}
+
+/**
+ * Substitute `{{key}}` placeholders in one template string.
+ * @param template - template with placeholders.
+ * @param vars - placeholder values.
+ * @returns the rendered string.
+ */
+export function renderTemplate(template: string, vars: Readonly<Record<string, string>>): string {
+  return template.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/gu, (match, key: string) =>
+    key in vars ? (vars[key] as string) : match,
+  )
+}
+
+/** Task root for a language track, with `{{language}}` substituted. */
+export function manifestTaskRoot(manifest: BenchmarkManifest, language: string): string {
+  return renderTemplate(manifest.tasks.root, { language })
+}
+
+/** Environment requirements declared by the manifest. */
+export function manifestRequirements(manifest: BenchmarkManifest): readonly EnvironmentRequirement[] {
+  return manifest.environment.requirements
+}
+
+function validateManifest(value: unknown, path: string): BenchmarkManifest {
+  if (value === null || typeof value !== 'object') {
+    throw new Error('manifest(' + path + '): root must be a mapping')
+  }
+  const root = value as Record<string, unknown>
+  if (root.schema !== 1) throw new Error('manifest(' + path + '): schema must be 1')
+  const name = requireString(root.name, 'name')
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(name)) {
+    throw new Error('manifest(' + path + '): name must be lower-kebab-case')
+  }
+  const tasks = requireObject(root.tasks, 'tasks')
+  if (tasks.discovery !== 'directory') {
+    throw new Error('manifest(' + path + '): tasks.discovery must be "directory"')
+  }
+  const tasksRoot = requireString(tasks.root, 'tasks.root')
+  if (!tasksRoot.includes('{{language}}')) {
+    throw new Error('manifest(' + path + '): tasks.root must contain {{language}} so one manifest serves every track')
+  }
+  const meta = requireObject(tasks.meta, 'tasks.meta')
+  const prompt = requireObject(root.prompt, 'prompt')
+  const promptFiles = requireArray(prompt.files, 'prompt.files').map((item, index): { path: string; optional?: boolean } => {
+    const entry = requireObject(item, 'prompt.files[' + String(index) + ']')
+    const optional = entry.optional === true ? { optional: true } : {}
+    return { path: requireString(entry.path, 'prompt.files[' + String(index) + '].path'), ...optional }
+  })
+  const template = requireString(prompt.template, 'prompt.template')
+  if (!template.includes('{{prompt}}')) {
+    throw new Error('manifest(' + path + '): prompt.template must contain {{prompt}}')
+  }
+  if (!template.includes('{{solutionFiles}}')) {
+    throw new Error('manifest(' + path + '): prompt.template must contain {{solutionFiles}}')
+  }
+  const verify = requireObject(root.verify, 'verify')
+  const command = requireStringArray(verify.command, 'verify.command')
+  if (!command.some((part) => part.includes('{{testFiles}}'))) {
+    throw new Error('manifest(' + path + '): verify.command must reference {{testFiles}}')
+  }
+  if (verify.result !== 'junitxml') {
+    throw new Error('manifest(' + path + '): verify.result must be "junitxml"')
+  }
+  const environment = requireObject(root.environment, 'environment')
+  const requirements = requireArray(environment.requirements, 'environment.requirements').map(
+    (item, index): EnvironmentRequirement => {
+      const requirement = requireObject(item, 'environment.requirements[' + String(index) + ']')
+      return {
+        id: requireString(requirement.id, 'environment.requirements[' + String(index) + '].id'),
+        command: requireString(requirement.command, 'environment.requirements[' + String(index) + '].command'),
+        args: requireStringArray(requirement.args, 'environment.requirements[' + String(index) + '].args'),
+        reason: requireString(requirement.reason, 'environment.requirements[' + String(index) + '].reason'),
+      }
+    },
+  )
+  const ids = new Set(requirements.map((requirement) => requirement.id))
+  if (ids.size !== requirements.length) {
+    throw new Error('manifest(' + path + '): requirement ids must be unique')
+  }
+  return {
+    schema: 1,
+    name,
+    tasks: {
+      discovery: 'directory',
+      root: tasksRoot,
+      meta: {
+        file: requireString(meta.file, 'tasks.meta.file'),
+        solutionFiles: requireString(meta.solutionFiles, 'tasks.meta.solutionFiles'),
+        testFiles: requireString(meta.testFiles, 'tasks.meta.testFiles'),
+      },
+      exclude: requireStringArray(tasks.exclude, 'tasks.exclude'),
+    },
+    prompt: { files: promptFiles, template },
+    verify: { command, result: 'junitxml' },
+    environment: { requirements },
+  }
+}
+
+function requireObject(value: unknown, field: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('manifest: ' + field + ' must be a mapping')
+  }
+  return value as Record<string, unknown>
+}
+
+function requireArray(value: unknown, field: string): readonly unknown[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('manifest: ' + field + ' must be a non-empty array')
+  }
+  return value
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error('manifest: ' + field + ' must be a non-empty string')
+  }
+  return value
+}
+
+function requireStringArray(value: unknown, field: string): readonly string[] {
+  return requireArray(value, field).map((item, index) => requireString(item, field + '[' + String(index) + ']'))
+}

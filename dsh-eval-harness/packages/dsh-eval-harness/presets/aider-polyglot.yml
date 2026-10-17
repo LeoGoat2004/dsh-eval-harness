@@ -1,0 +1,61 @@
+# Declarative benchmark contract (schema 1).
+#
+# This file describes WHAT the benchmark needs and HOW it is judged. It never
+# provisions an environment: `environment.requirements` are only probed, and the
+# Harness / agent / user decide how to satisfy them.
+schema: 1
+name: aider-polyglot
+
+tasks:
+  discovery: directory
+  root: "{{language}}/exercises/practice"
+  meta:
+    file: .meta/config.json
+    solutionFiles: files.solution
+    testFiles: files.test
+  exclude:
+    - .meta
+    - .docs
+    - .approaches
+
+prompt:
+  files:
+    - path: .docs/instructions.md
+    - path: .docs/instructions.append.md
+      optional: true
+  template: |
+    You are working in a repository that contains one programming exercise.
+
+    {{prompt}}
+
+    ## Your task
+
+    Implement the exercise in: {{solutionFiles}}.
+    Work only inside the current directory. The grading tests are not present in this
+    workspace and must not be recreated; implement the public interface the exercise
+    describes.
+
+verify:
+  command:
+    - python
+    - -m
+    - pytest
+    - "{{testFiles}}"
+    - "--junitxml={{junitPath}}"
+    - -q
+  result: junitxml
+
+environment:
+  requirements:
+    - id: python
+      command: python
+      args:
+        - --version
+      reason: The exercises need a Python runtime
+    - id: pytest
+      command: python
+      args:
+        - -m
+        - pytest
+        - --version
+      reason: The verifier runs pytest

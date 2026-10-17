@@ -9,8 +9,9 @@
 # Development-only directories are excluded everywhere, including inside the
 # published folder: design docs, benchmark checkouts, run artifacts and
 # reference implementations are local working material.
+# Note: the plugin source directory `src/benchmark/` is distribution code and
+# must stay tracked; only the plural `benchmarks/` data roots are ignored.
 docs/
 benchmarks/
-benchmark/
 runs/
 reference/
