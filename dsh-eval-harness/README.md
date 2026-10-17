@@ -30,7 +30,7 @@ agent runs the evaluation and the report is written to `runs/<run-id>/dashboard/
 
 - DSH `0.2.x`, Node.js `>= 20`
 - A DSH profile with the model provider you want to evaluate already configured
-- A local benchmark checkout plus the tools its adapter needs (Aider Python: `python`, `pytest`)
+- A local benchmark checkout; its runtime prerequisites are declared by the benchmark definition and checked before a run
 
 ## License
 

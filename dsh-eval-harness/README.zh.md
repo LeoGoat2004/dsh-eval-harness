@@ -28,7 +28,7 @@ dsh plugin --profile <profile> add ./dsh-eval-harness
 
 - DSH `0.2.x`，Node.js `>= 20`
 - DSH profile 里已经配置好要评测的模型 provider
-- 本地有 benchmark 检出，以及适配器需要的工具（Aider Python：`python`、`pytest`）
+- 本地有 benchmark 检出；它需要的运行环境由 benchmark 自己的定义声明，运行前由插件检查
 
 ## 许可证
 
