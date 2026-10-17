@@ -36,8 +36,8 @@ dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 
 报告写在 `<run-dir>/dashboard/index.html`。
 
-benchmark 在宿主机还是容器内执行，由它的 manifest 声明。插件不会拉取或构建镜像、不安装依赖、
-不改 benchmark：环境与 manifest 不符时如实报告并拒绝运行。
+接入新 benchmark 时：DSH agent 会读取 benchmark 结构并生成对应的 manifest，先校验（可做红绿检查）
+再运行；随后按 manifest 声明的环境进行检查，环境就绪即可开始评测。
 
 ## 许可证
 

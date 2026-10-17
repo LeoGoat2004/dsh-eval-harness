@@ -39,9 +39,9 @@ Set `<profile>` to your DSH profile name (usually `desktop`), then restart DSH.
 
 The report is written to `<run-dir>/dashboard/index.html`.
 
-A benchmark runs on the host or inside a container as declared by its manifest. The plugin never
-pulls or builds images, installs dependencies, or edits the benchmark: an environment that does not
-match the manifest is reported and the run is refused.
+Adding a new benchmark: the DSH agent inspects the benchmark and generates its manifest, which is
+validated (optionally with a red/green check) before any run. The environment is then checked
+against what the manifest declares; once it is ready, the evaluation starts.
 
 ## License
 
