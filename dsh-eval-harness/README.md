@@ -79,12 +79,7 @@ npm run run:eval -- \
 - Runs are started from the CLI; there is no one-click in-chat run yet.
 - One report per run; cross-run comparison is planned.
 - You provide the execution environment; the plugin records it but does not provision it.
-
-## Documentation
-
-- [Pipeline and confirmations](docs/run-pipeline.md)
-- [Run artifacts](docs/run-artifacts.md)
-- [Dashboard design](docs/dashboard-design.md)
+- Design documents are kept outside the public repository during development.
 
 ## License
 

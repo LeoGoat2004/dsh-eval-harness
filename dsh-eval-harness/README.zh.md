@@ -73,12 +73,7 @@ npm run run:eval -- \
 - 评测从 CLI 启动，暂不支持对话内一键运行。
 - 每个 run 一份报告，跨 run 对比还在计划中。
 - 执行环境由你提供，插件只记录不搭建。
-
-## 文档
-
-- [流程与确认门禁](docs/run-pipeline.md)
-- [运行产物](docs/run-artifacts.md)
-- [看板设计](docs/dashboard-design.md)
+- 设计文档在开发阶段不进入公开仓库。
 
 ## 许可证
 

@@ -1,8 +1,16 @@
 # Open-source repository root.
 #
-# Only the plugin workspace is published. Everything else in this directory
-# (internal notes, reference checkouts, run artifacts, benchmark checkouts)
-# stays out of the repository.
+# Only distributable plugin code is published. Development-only content stays
+# out of the repository and never reaches the remote.
 /*
 !/.gitignore
 !/dsh-eval-harness/
+
+# Development-only directories are excluded everywhere, including inside the
+# published folder: design docs, benchmark checkouts, run artifacts and
+# reference implementations are local working material.
+docs/
+benchmarks/
+benchmark/
+runs/
+reference/
