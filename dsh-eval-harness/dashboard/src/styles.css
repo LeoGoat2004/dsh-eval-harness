@@ -1,0 +1,100 @@
+/* Raise the secondary-text contrast above Mantine's default dimmed tone.
+   Mantine sets the variable on :root[data-mantine-color-scheme=...], so the
+   override must use the same specificity. */
+
+:root {
+  --mantine-color-dimmed: var(--mantine-color-gray-8);
+}
+
+:root[data-mantine-color-scheme='light'],
+:host([data-mantine-color-scheme='light']) {
+  --mantine-color-dimmed: var(--mantine-color-gray-8);
+}
+
+:root[data-mantine-color-scheme='dark'],
+:host([data-mantine-color-scheme='dark']) {
+  --mantine-color-dimmed: var(--mantine-color-dark-1);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+.empty-state {
+  padding: 64px 24px;
+  text-align: center;
+  color: var(--mantine-color-dimmed);
+  font-family: system-ui, sans-serif;
+}
+
+/* Horizontal execution timeline. */
+.timeline {
+  position: relative;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--mantine-color-gray-1);
+  border: 1px solid var(--mantine-color-gray-3);
+}
+
+[data-mantine-color-scheme='dark'] .timeline {
+  background: var(--mantine-color-dark-6);
+  border-color: var(--mantine-color-dark-4);
+}
+
+.marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  cursor: default;
+}
+
+.marker-call {
+  width: 7px;
+  height: 7px;
+  background: var(--mantine-color-blue-5);
+}
+
+.marker-error {
+  width: 10px;
+  height: 10px;
+  background: var(--mantine-color-red-6);
+  box-shadow: 0 0 0 3px var(--mantine-color-red-1);
+}
+
+[data-mantine-color-scheme='dark'] .marker-error {
+  box-shadow: 0 0 0 3px var(--mantine-color-red-9);
+}
+
+.marker-turn {
+  width: 6px;
+  height: 6px;
+  background: var(--mantine-color-gray-6);
+}
+
+.event-row-error {
+  background: var(--mantine-color-red-0);
+  border-radius: 4px;
+}
+
+[data-mantine-color-scheme='dark'] .event-row-error {
+  background: rgba(250, 82, 82, 0.14);
+}
+
+/* Keep the smallest report text at 12px and the default body at 13.5px. */
+body {
+  font-size: 13.5px;
+}
+
+/* Anchor navigation must not hide a section title under the fixed header. */
+#summary,
+#metrics,
+#benchmark {
+  scroll-margin-top: 76px;
+}

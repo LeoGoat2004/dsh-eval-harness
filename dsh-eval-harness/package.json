@@ -1,0 +1,42 @@
+{
+  "name": "dsh-eval-harness-monorepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "postinstall": "npm run build",
+    "typecheck": "node scripts/typecheck.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "npm run test:naming && npm run test:import && npm run test:mount",
+    "test:naming": "node scripts/diag-naming.mjs",
+    "test:import": "node scripts/diag-import.mjs",
+    "test:mount": "node scripts/diag-mount.mjs",
+    "test:pipeline": "node scripts/diag-pipeline.mjs",
+    "check": "npm run typecheck && npm run build && npm test",
+    "run:eval": "node scripts/run-eval.mjs",
+    "run:recompute": "node scripts/recompute-metrics.mjs",
+    "run:recompute-checks": "node scripts/recompute-checks.mjs",
+    "dashboard:app": "npm --prefix dashboard run build",
+    "dashboard": "node scripts/dashboard.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-ptc-runtime": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "3.18.5",
+    "@types/node": "^22.20.0",
+    "js-yaml": "^4.1.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

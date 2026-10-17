@@ -1,0 +1,6 @@
+# dsh-eval-harness bundle layer.
+# The bundle package is also the plugin: the row name is the bundle package
+# name, which is installed into the profile, so the loader resolves it there.
+- insert:
+    - id: eval-harness-run
+      name: 'dsh-eval-harness'

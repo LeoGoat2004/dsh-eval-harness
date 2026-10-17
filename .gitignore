@@ -1,0 +1,8 @@
+# Open-source repository root.
+#
+# Only the plugin workspace is published. Everything else in this directory
+# (internal notes, reference checkouts, run artifacts, benchmark checkouts)
+# stays out of the repository.
+/*
+!/.gitignore
+!/dsh-eval-harness/

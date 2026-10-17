@@ -1,0 +1,139 @@
+// Mount-contract check: mount the built plugin on a real Cordis Context with a
+// minimal fake `tools` service, and prove `apply()` actually registers the
+// expected tool. This covers the wiring that the factory-only check misses.
+import { Context, Service } from '@deepseek-ai/cordis'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { BUNDLE_DIR, ROWS } from './registry.mjs'
+
+const entry = join(BUNDLE_DIR, 'lib', 'index.js')
+if (!existsSync(entry)) {
+  console.error('diag-mount: ' + entry + ' is missing; run `npm run build` first')
+  process.exit(1)
+}
+
+class FakeTools extends Service {
+  constructor(ctx) {
+    super(ctx, 'tools')
+    this.registered = []
+  }
+
+  register(definition) {
+    this.registered.push(definition)
+    return () => {}
+  }
+}
+
+const ctx = new Context()
+ctx.plugin(FakeTools)
+await new Promise((resolve) => setTimeout(resolve, 50))
+
+if (ctx.tools === undefined) {
+  console.error('diag-mount: fake tools service did not register on the context')
+  process.exit(1)
+}
+
+const module = await import(pathToFileURL(entry).href)
+const plugin = module.default ?? module
+ctx.plugin(plugin)
+await new Promise((resolve) => setTimeout(resolve, 50))
+
+const names = ctx.tools.registered.map((definition) => definition.name)
+const expectedNames = new Set(ROWS.map((row) => row.plugin))
+const failures = []
+if (!expectedNames.has(plugin.name)) failures.push('plugin name is not a registered row plugin')
+if (!names.includes('eval_status')) failures.push('apply() did not register eval_status')
+if (!names.includes('eval_preflight')) failures.push('apply() did not register eval_preflight')
+
+// Exercise the tool body too: registration alone does not prove `execute()` works.
+const definition = ctx.tools.registered.find((candidate) => candidate.name === 'eval_status')
+if (definition !== undefined) {
+  const value = await definition.execute({}, {})
+  if (value === null || typeof value !== 'object') {
+    failures.push('eval_status execute() must return an object')
+  } else if (value.plugin !== 'dsh-eval-harness') {
+    failures.push('eval_status execute() returned the wrong plugin identity')
+  } else if (value.config === null || typeof value.config !== 'object') {
+    failures.push('eval_status execute() must report the effective config')
+  }
+}
+
+const preflight = ctx.tools.registered.find((candidate) => candidate.name === 'eval_preflight')
+if (preflight === undefined) {
+  failures.push('eval_preflight definition is missing')
+} else {
+  // A temporary profile supplies the provider config the tool resolves from.
+  const profileDir = mkdtempSync(join(tmpdir(), 'dsh-eval-profile-'))
+  writeFileSync(
+    join(profileDir, 'cordis.patch.yml'),
+    [
+      '- id: llm-pi-ai',
+      "  name: '@deepseek-ai/dsh-llm-pi-ai'",
+      '  config:',
+      '    providers:',
+      '      siliconflow:',
+      '        apiKeyEnv: SILICONFLOW_API_KEY',
+      '        api: openai-completions',
+      '        baseURL: https://example.invalid/v1',
+      '        models:',
+      '          - id: Qwen/Qwen3-8B',
+      '',
+    ].join('\n'),
+  )
+  process.env.SILICONFLOW_API_KEY = 'self-check'
+  const planArgs = {
+    harnessProfile: profileDir,
+    dshVersion: 'self-check',
+    provider: 'siliconflow',
+    model: 'Qwen/Qwen3-8B',
+    benchmark: 'aider-polyglot',
+    language: 'python',
+    revision: 'self-check',
+    tasks: ['transpose'],
+  }
+  try {
+    const value = await preflight.execute(planArgs, {})
+    if (value?.ready !== true) failures.push('eval_preflight must report ready=true with the stub credential')
+    if (value?.plan?.model?.provider !== 'siliconflow') {
+      failures.push('eval_preflight must resolve the provider from the profile')
+    }
+    if (value?.plan?.model?.model !== 'Qwen/Qwen3-8B') {
+      failures.push('eval_preflight must resolve the model from the profile')
+    }
+    if (!Array.isArray(value?.requirements) || value.requirements.length < 2) {
+      failures.push('eval_preflight must report the declared python/pytest requirements')
+    }
+    if (!Array.isArray(value?.missing) || value.missing.length !== 0) {
+      failures.push('eval_preflight must report no missing requirements on this host')
+    }
+    if (value?.plan?.benchmark?.tasks?.length !== 1) {
+      failures.push('eval_preflight must echo the explicit task list in the plan')
+    }
+    let rejectedBenchmark = false
+    try {
+      await preflight.execute({ ...planArgs, benchmark: 'unknown-benchmark' }, {})
+    } catch {
+      rejectedBenchmark = true
+    }
+    if (!rejectedBenchmark) failures.push('eval_preflight must reject unsupported benchmarks')
+    let rejectedProvider = false
+    try {
+      await preflight.execute({ ...planArgs, provider: 'missing-provider' }, {})
+    } catch {
+      rejectedProvider = true
+    }
+    if (!rejectedProvider) failures.push('eval_preflight must reject providers absent from the profile')
+  } finally {
+    delete process.env.SILICONFLOW_API_KEY
+    rmSync(profileDir, { recursive: true, force: true })
+  }
+}
+
+if (failures.length > 0) {
+  console.error('MOUNT CONTRACT FAIL')
+  for (const failure of failures) console.error('  - ' + failure)
+  process.exit(1)
+}
+console.log('MOUNT CONTRACT OK (' + names.join(', ') + ')')
