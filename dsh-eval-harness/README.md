@@ -12,8 +12,8 @@ which layer owns the failure: model, Harness, benchmark, or environment.
 - DSH `0.2.x`
 - Node.js `>= 22.19`
 - A DSH profile with the model provider you want to evaluate already configured
-- A local benchmark checkout plus a manifest describing it; the benchmark's environment is
-  provided by you or the Harness — the plugin only declares, checks and records it
+- A local benchmark checkout plus a manifest describing it; its environment requirements are
+  checked before a run
 
 ## Install
 
@@ -29,9 +29,8 @@ Set `<profile>` to your DSH profile name (usually `desktop`), then restart DSH.
 
 ## Usage
 
-1. **`eval_preflight`** — confirm the Harness, the model and the benchmark; probe declared
-   environment requirements; audit the profile for isolation risks. Missing requirements are
-   reported, not installed.
+1. **`eval_preflight`** — confirm the Harness, the model and the benchmark; check that the
+   environment satisfies the declared requirements; audit the profile for isolation risks.
 2. **`eval_manifest`** — validate the benchmark manifest; optionally run its red/green check
    (a stub must fail, the official reference must pass).
 3. **`eval_run`** — start one evaluation in the background and return a job token.

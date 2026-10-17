@@ -11,8 +11,7 @@
 - DSH `0.2.x`
 - Node.js `>= 22.19`
 - DSH profile 里已经配置好要评测的模型 provider
-- 本地有 benchmark 检出，以及描述它的 manifest；benchmark 的运行环境由你或 Harness 提供，
-  插件只声明、检查并记录
+- 本地有 benchmark 检出，以及描述它的 manifest；它的环境需求会在运行前检查
 
 ## 安装
 
@@ -28,8 +27,8 @@ dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 
 ## 使用流程
 
-1. **`eval_preflight`** —— 和你确认 Harness、模型与 benchmark；探测 manifest 声明的环境需求；
-   审计 profile 的隔离风险。缺失的环境只报告，不安装。
+1. **`eval_preflight`** —— 和你确认 Harness、模型与 benchmark；检查环境是否满足声明的需求；
+   审计 profile 的隔离风险。
 2. **`eval_manifest`** —— 校验 benchmark manifest；可选执行红绿检查（stub 必须失败，官方参考解必须通过）。
 3. **`eval_run`** —— 在后台启动一次评测，返回 job token。
 4. **`eval_status`** —— 查询进度，获取 run 目录、报告路径与看板路径。
