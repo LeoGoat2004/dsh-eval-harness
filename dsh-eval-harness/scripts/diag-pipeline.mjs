@@ -4,7 +4,8 @@
 // immediately, so preflight, environment recording, artifact layout and the
 // failure path are exercised end to end without spending API. Also proves the
 // preflight refuses to start when the model credential is missing.
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { readDshVersion, runEvaluation } from '../packages/dsh-eval-harness/lib/run/runner.js'
@@ -205,6 +206,103 @@ if (existsSync(benchmarkRoot)) {
     redGreen.results.every((result) => result.redOk && result.greenOk),
     'red must fail on the stub and green must pass with the reference solution',
   )
+}
+
+// Optional container-execution check (opt-in: needs Docker + network for the
+// fixture image). The executor is benchmark-agnostic: the fixture manifest only
+// declares image, mounts, an agent command and a grading command.
+if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
+  const { dockerRuntimeCheck, containerImageCheck, runContainerEpisode } = await import(
+    '../packages/dsh-eval-harness/lib/run/container.js'
+  )
+  const docker = dockerRuntimeCheck()
+  check(docker.ok === true, 'container executor test: ' + docker.detail)
+  if (docker.ok) {
+    const fixtureDir = join(workDir, 'container-fixture')
+    const image = 'dsh-eval-fixture:py'
+    mkdirSync(fixtureDir, { recursive: true })
+    writeFileSync(
+      join(fixtureDir, 'Dockerfile'),
+      'FROM python:3.11-slim\nRUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple pytest\n',
+    )
+    const built = spawnSync('docker', ['build', '--network', 'host', '-t', image, fixtureDir], {
+      encoding: 'utf8',
+      timeout: 600_000,
+      windowsHide: true,
+    })
+    check(built.status === 0, 'container executor test: fixture image build failed: ' + String(built.stderr).slice(-300))
+    const imageCheck = containerImageCheck(image)
+    check(imageCheck.ok === true, 'container executor test: ' + imageCheck.detail)
+    const fixtureTaskDir = join(fixtureDir, 'python', 'fixture-task')
+    mkdirSync(join(fixtureTaskDir, '.meta'), { recursive: true })
+    mkdirSync(join(fixtureTaskDir, 'tests'), { recursive: true })
+    writeFileSync(join(fixtureTaskDir, 'prompt.md'), 'write out.py')
+    writeFileSync(join(fixtureTaskDir, 'out.py'), '# stub\n')
+    writeFileSync(join(fixtureTaskDir, '.meta', 'config.json'), '{"files":{"solution":["out.py"],"test":["test_out.py"]}}')
+    writeFileSync(join(fixtureTaskDir, 'tests', 'test_out.py'), 'def test_out():\n    assert open("/workspace/out.py").read().strip() == "ok"\n')
+    const manifestPath = join(workDir, 'container-manifest.yml')
+    writeFileSync(
+      manifestPath,
+      [
+        'schema: 1',
+        'name: fixture-container',
+        'tasks:',
+        '  discovery: directory',
+        '  root: "{{language}}"',
+        '  meta:',
+        '    file: .meta/config.json',
+        '    solutionFiles: files.solution',
+        '    testFiles: files.test',
+        '  exclude: [.meta]',
+        'prompt:',
+        '  files:',
+        '    - path: prompt.md',
+        '  template: "{{prompt}} {{solutionFiles}}"',
+        'verify:',
+        '  command: [python, -m, pytest, "{{testFiles}}"]',
+        '  result: junitxml',
+        'environment:',
+        '  requirements:',
+        '    - id: docker',
+        '      kind: container-runtime',
+        '      command: docker',
+        '      args: [--version]',
+        '      reason: container execution needs a container runtime',
+        'execution:',
+        '  kind: container',
+        '  container:',
+        '    image: "' + image + '"',
+        '    workspace: /workspace',
+        '    mounts:',
+        '      - source: "{{taskDir}}"',
+        '        target: /task',
+        '        readOnly: true',
+        '    agentCommand: [bash, -lc, "echo ok > /workspace/out.py"]',
+        '    verifyCommand: [python, -m, pytest, /task/tests/test_out.py, --junitxml=/dsh-verify/junit.xml, -q]',
+        '',
+      ].join('\n'),
+    )
+    const loadedFixture = loadManifest(manifestPath)
+    const benchmarkFixture = await loadBenchmarkFromManifest(loadedFixture, fixtureDir, 'python', ['fixture-task'], 'self-check')
+    const fixtureTask = benchmarkFixture.tasks[0]
+    const episodeDir = join(workDir, 'container-episode')
+    mkdirSync(episodeDir, { recursive: true })
+    writeFileSync(join(episodeDir, 'prompt.md'), 'write out.py')
+    const result = runContainerEpisode({
+      manifest: loadedFixture.manifest,
+      task: fixtureTask,
+      taskDir: fixtureTask.exerciseDir,
+      workspaceDir: join(episodeDir, 'workspace'),
+      traceDir: join(episodeDir, 'trace'),
+      verifyDir: join(episodeDir, 'verify'),
+      promptFile: episodeDir + '/prompt.md',
+      timeoutMs: 120_000,
+      logPath: join(episodeDir, 'container.log'),
+    })
+    check(result.verify.ok === true, 'container executor must grade a successful container episode: ' + JSON.stringify(result.verify.error ?? ''))
+    check(result.agentExit === 0, 'container executor must report the agent exit marker')
+    check(result.verifyExit === 0, 'container executor must report the grading exit marker')
+  }
 }
 
 // The credential check must refuse to start before any episode runs.

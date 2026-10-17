@@ -48,6 +48,32 @@ export interface BenchmarkManifest {
     /** Where the reference is copied: first solution file or every solution file. */
     readonly target: 'solutionFiles[0]' | 'allSolutionFiles'
   }
+  /**
+   * Where an episode runs. Omitted means `host` (the historical behaviour).
+   * `container` never provisions an image: the environment must provide it, and
+   * the preflight reports a missing image instead of building one.
+   */
+  readonly execution?: {
+    readonly kind: 'host' | 'container'
+    readonly container?: {
+      /** Container image (templated per task); provided by the environment. */
+      readonly image: string
+      /** Container path of the agent workspace. */
+      readonly workspace: string
+      /** Container path where the raw trace directory is mounted (default `/trace`). */
+      readonly tracePath?: string
+      /** Mount the host task workspace into `workspace` (default true). */
+      readonly mountWorkspace?: boolean
+      /** Extra mounts (templated). `source` is a host path. */
+      readonly mounts?: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[]
+      /** Container environment (templated; `{{env:NAME}}` reads the host env). */
+      readonly env?: readonly { readonly name: string; readonly value: string }[]
+      /** Agent command inside the container (templated). */
+      readonly agentCommand: readonly string[]
+      /** Grading command inside the same container (templated). */
+      readonly verifyCommand: readonly string[]
+    }
+  }
   /** Requirements the environment must satisfy; the plugin only probes them. */
   readonly environment: {
     readonly requirements: readonly EnvironmentRequirement[]
@@ -168,6 +194,7 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
     throw new Error('manifest(' + path + '): requirement ids must be unique')
   }
   const reference = validateReference(root.reference, path)
+  const execution = validateExecution(root.execution, path)
   return {
     schema: 1,
     name,
@@ -184,7 +211,60 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
     prompt: { files: promptFiles, template },
     verify: { command, result: 'junitxml' },
     ...(reference === undefined ? {} : { reference }),
+    ...(execution === undefined ? {} : { execution }),
     environment: { requirements },
+  }
+}
+
+/** Validate the optional execution block; container mode stays declarative. */
+function validateExecution(value: unknown, path: string): BenchmarkManifest['execution'] {
+  if (value === undefined) return undefined
+  const execution = requireObject(value, 'execution')
+  if (execution.kind !== 'host' && execution.kind !== 'container') {
+    throw new Error('manifest(' + path + '): execution.kind must be host or container')
+  }
+  if (execution.kind === 'host') {
+    if (execution.container !== undefined) {
+      throw new Error('manifest(' + path + '): execution.container is only valid with kind container')
+    }
+    return { kind: 'host' }
+  }
+  const container = requireObject(execution.container, 'execution.container')
+  const mounts = container.mounts === undefined
+    ? undefined
+    : requireArray(container.mounts, 'execution.container.mounts').map((item, index) => {
+        const mount = requireObject(item, 'execution.container.mounts[' + String(index) + ']')
+        return {
+          source: requireString(mount.source, 'execution.container.mounts[' + String(index) + '].source'),
+          target: requireString(mount.target, 'execution.container.mounts[' + String(index) + '].target'),
+          ...(mount.readOnly === true ? { readOnly: true } : {}),
+        }
+      })
+  const env = container.env === undefined
+    ? undefined
+    : requireArray(container.env, 'execution.container.env').map((item, index) => {
+        const entry = requireObject(item, 'execution.container.env[' + String(index) + ']')
+        return {
+          name: requireString(entry.name, 'execution.container.env[' + String(index) + '].name'),
+          value: requireString(entry.value, 'execution.container.env[' + String(index) + '].value'),
+        }
+      })
+  return {
+    kind: 'container',
+    container: {
+      image: requireString(container.image, 'execution.container.image'),
+      workspace: requireString(container.workspace, 'execution.container.workspace'),
+      ...(container.tracePath === undefined
+        ? {}
+        : { tracePath: requireString(container.tracePath, 'execution.container.tracePath') }),
+      ...(container.mountWorkspace === undefined
+        ? {}
+        : { mountWorkspace: container.mountWorkspace === true }),
+      ...(mounts === undefined ? {} : { mounts }),
+      ...(env === undefined ? {} : { env }),
+      agentCommand: requireStringArray(container.agentCommand, 'execution.container.agentCommand'),
+      verifyCommand: requireStringArray(container.verifyCommand, 'execution.container.verifyCommand'),
+    },
   }
 }
 

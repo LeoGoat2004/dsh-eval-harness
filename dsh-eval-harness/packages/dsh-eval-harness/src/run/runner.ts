@@ -13,6 +13,13 @@ import {
   writeTaskOverlay,
 } from './profile.ts'
 import { foldMetrics, normalizeEvents, readTrace, type TraceMetrics } from './collect.ts'
+import {
+  containerImageCheck,
+  containerVars,
+  dockerRuntimeCheck,
+  renderContainerValue,
+  runContainerEpisode,
+} from './container.ts'
 import { probeRequirements, type EnvironmentProbe, type EnvironmentRequirement } from './environment.ts'
 import type { ModelTarget } from '../model/target.ts'
 import type { LoopGuardLimits, LoopGuardTrip } from './guard.ts'
@@ -108,12 +115,37 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   // Environment facts are part of the result: a lab-side failure must never be
   // reported as a DSH defect. Preflight fails fast when the environment is not
   // ready, so the user configures it before any model call is spent.
+  const containerExecution =
+    loadedManifest.manifest.execution?.kind === 'container'
+      ? (loadedManifest.manifest.execution.container ?? null)
+      : null
+  const containerChecks: PreflightCheck[] = []
+  if (containerExecution !== null) {
+    const docker = dockerRuntimeCheck()
+    containerChecks.push({ name: 'container-runtime', ok: docker.ok, detail: docker.detail })
+    if (docker.ok) {
+      const images = new Set<string>()
+      for (const task of benchmark.tasks) {
+        images.add(
+          renderContainerValue(
+            containerExecution.image,
+            containerVars(loadedManifest.manifest, task, { taskDir: task.exerciseDir, traceDir: '' }),
+          ),
+        )
+      }
+      for (const image of images) {
+        const check = containerImageCheck(image)
+        containerChecks.push({ name: 'container-image:' + image, ok: check.ok, detail: check.detail })
+      }
+    }
+  }
   const preflight = preflightEnvironment(
     spec,
     runDir,
     dshHome,
     profile.profileName,
     benchmark.environment,
+    containerChecks,
   )
   writeJson(join(runDir, 'preflight.json'), preflight)
   if (!preflight.ok) {
@@ -150,26 +182,70 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     const workspaceDir = join(taskDir, 'workspace')
     const traceDir = join(taskDir, 'trace')
     mkdirSync(taskDir, { recursive: true })
-    prepareWorkspace(task, workspaceDir)
-    const overlayPath = writeTaskOverlay(taskDir, traceDir)
     const prompt = buildPrompt(task)
     writeFileSync(join(taskDir, 'prompt.md'), prompt + '\n')
     mkdirSync(join(taskDir, 'agent'), { recursive: true })
-
-    const episode = await runEpisode({
-      dshBin: spec.dshBin,
-      dshHome,
-      profileName: profile.profileName,
-      overlayPath,
-      workspaceDir,
-      traceDir,
-      prompt,
-      env: spec.env,
-      timeoutMs: spec.timeoutMs,
-      limits: spec.guard,
-    })
-    writeFileSync(join(taskDir, 'agent', 'stdout.log'), episode.stdout)
-    writeFileSync(join(taskDir, 'agent', 'stderr.log'), episode.stderr)
+    let episode: {
+      exitCode: number | null
+      timedOut: boolean
+      durationMs: number
+      guard: { readonly reason: string } | null
+      verify: VerifyResult
+    }
+    if (containerExecution !== null) {
+      if (containerExecution.mountWorkspace !== false) prepareWorkspace(task, workspaceDir)
+      else mkdirSync(workspaceDir, { recursive: true })
+      const containerEpisode = runContainerEpisode({
+        manifest: loadedManifest.manifest,
+        task,
+        taskDir,
+        workspaceDir,
+        traceDir,
+        verifyDir: join(taskDir, 'verify'),
+        promptFile: join(taskDir, 'prompt.md'),
+        timeoutMs: spec.timeoutMs,
+        logPath: join(taskDir, 'agent', 'container.log'),
+      })
+      writeFileSync(join(taskDir, 'agent', 'stdout.log'), containerEpisode.log)
+      writeFileSync(join(taskDir, 'agent', 'stderr.log'), '')
+      episode = {
+        exitCode: containerEpisode.exitCode,
+        timedOut: containerEpisode.timedOut,
+        durationMs: containerEpisode.durationMs,
+        guard: null,
+        verify: containerEpisode.verify,
+      }
+    } else {
+      prepareWorkspace(task, workspaceDir)
+      const overlayPath = writeTaskOverlay(taskDir, traceDir)
+      const hostEpisode = await runEpisode({
+        dshBin: spec.dshBin,
+        dshHome,
+        profileName: profile.profileName,
+        overlayPath,
+        workspaceDir,
+        traceDir,
+        prompt,
+        env: spec.env,
+        timeoutMs: spec.timeoutMs,
+        limits: spec.guard,
+      })
+      writeFileSync(join(taskDir, 'agent', 'stdout.log'), hostEpisode.stdout)
+      writeFileSync(join(taskDir, 'agent', 'stderr.log'), hostEpisode.stderr)
+      episode = {
+        exitCode: hostEpisode.exitCode,
+        timedOut: hostEpisode.timedOut,
+        durationMs: hostEpisode.durationMs,
+        guard: hostEpisode.guard,
+        verify: runManifestVerifier({
+          manifest: loadedManifest.manifest,
+          task,
+          workspaceDir,
+          taskDir,
+          timeoutMs: 120_000,
+        }),
+      }
+    }
 
     const sessionLog = findSessionLog(traceDir)
     let metrics: TraceMetrics | null = null
@@ -189,13 +265,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       }
     }
 
-    const verify = runManifestVerifier({
-      manifest: loadedManifest.manifest,
-      task,
-      workspaceDir,
-      taskDir,
-      timeoutMs: 120_000,
-    })
+    const verify = episode.verify
     writeJson(join(taskDir, 'checks.json'), verify)
 
     const status: TaskSummary['status'] =
@@ -433,8 +503,9 @@ function preflightEnvironment(
   dshHome: string,
   profileName: string,
   requirements: readonly EnvironmentRequirement[],
+  extraChecks: readonly PreflightCheck[] = [],
 ): PreflightReport {
-  const checks: PreflightCheck[] = []
+  const checks: PreflightCheck[] = [...extraChecks]
   let writable = true
   let writableDetail = 'run directory accepts writes'
   try {
