@@ -4,6 +4,9 @@
 # out of the repository and never reaches the remote.
 /*
 !/.gitignore
+!/README.md
+!/README.zh.md
+!/LICENSE
 !/dsh-eval-harness/
 
 # Development-only directories are excluded everywhere, including inside the
