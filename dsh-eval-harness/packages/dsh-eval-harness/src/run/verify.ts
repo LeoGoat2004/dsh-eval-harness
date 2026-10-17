@@ -2,6 +2,9 @@ import { spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AiderTask } from '../benchmark/aider.ts'
+import type { BenchmarkTask } from '../benchmark/interpreter.ts'
+import type { BenchmarkManifest } from '../benchmark/manifest.ts'
+import { renderTemplate } from '../benchmark/manifest.ts'
 
 /** One benchmark check: one test case from the exercise's own test file. */
 export interface Check {
@@ -21,6 +24,75 @@ export interface VerifyResult {
   readonly logPath: string
   /** Verifier infrastructure error, when pytest could not grade the workspace. */
   readonly error?: string
+}
+
+/**
+ * Run a manifest-declared verifier against a workspace in a throwaway copy.
+ * The workspace is never mutated; test files are injected only here.
+ * @param options - manifest, task, agent workspace, artifact directory, timeout.
+ * @returns parsed per-test checks plus the raw verifier log.
+ */
+export function runManifestVerifier(options: {
+  readonly manifest: BenchmarkManifest
+  readonly task: BenchmarkTask
+  readonly workspaceDir: string
+  readonly taskDir: string
+  readonly timeoutMs: number
+}): VerifyResult {
+  const verifyDir = join(options.taskDir, 'verify')
+  const verifyWorkspace = join(verifyDir, 'workspace')
+  mkdirSync(verifyWorkspace, { recursive: true })
+  cpSync(options.workspaceDir, verifyWorkspace, { recursive: true })
+  for (const testFile of options.task.testFiles) {
+    cpSync(join(options.task.exerciseDir, testFile), join(verifyWorkspace, testFile))
+  }
+  const junitPath = join(verifyDir, 'junit.xml')
+  const logPath = join(verifyDir, 'verifier.log')
+  const vars = {
+    language: options.task.language,
+    junitPath,
+    testFiles: options.task.testFiles.join(' '),
+  }
+  const args: string[] = []
+  for (const token of options.manifest.verify.command) {
+    if (token === '{{testFiles}}') {
+      args.push(...options.task.testFiles)
+      continue
+    }
+    args.push(renderTemplate(token, vars))
+  }
+  const executable = args.shift()
+  if (executable === undefined) {
+    return { ok: false, passed: 0, total: 0, checks: [], logPath, error: 'verifier: empty command' }
+  }
+  const result = spawnSync(executable, args, {
+    cwd: verifyWorkspace,
+    encoding: 'utf8',
+    timeout: options.timeoutMs,
+    windowsHide: true,
+  })
+  writeFileSync(logPath, (result.stdout ?? '') + (result.stderr ?? ''))
+  let checks: Check[] = []
+  try {
+    checks = parseJunit(readFileSync(junitPath, 'utf8'))
+  } catch (error) {
+    return {
+      ok: false,
+      passed: 0,
+      total: 0,
+      checks: [],
+      logPath,
+      error: 'verifier: no usable junit report (' + String(error) + ')',
+    }
+  }
+  const passed = checks.filter((check) => check.pass).length
+  return {
+    ok: checks.length > 0 && passed === checks.length,
+    passed,
+    total: checks.length,
+    checks,
+    logPath,
+  }
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   renderTemplate,
 } from '../packages/dsh-eval-harness/lib/benchmark/manifest.js'
 import { loadBenchmarkFromManifest } from '../packages/dsh-eval-harness/lib/benchmark/interpreter.js'
+import { validateManifest } from '../packages/dsh-eval-harness/lib/benchmark/validate.js'
 
 const root = resolve(import.meta.dirname, '..')
 const benchmarkRoot = resolve(process.argv[2] ?? join(root, '..', 'benchmarks', 'aider-polyglot'))
@@ -190,6 +191,20 @@ if (existsSync(benchmarkRoot)) {
   check(task?.testFiles.length >= 1, 'interpreter must read test files from task meta')
   check(task?.exclude.includes(task.testFiles[0]) === true, 'test files must be excluded from the agent workspace')
   check((task?.prompt.length ?? 0) > 100, 'interpreter must assemble a non-trivial prompt')
+
+  // Red/green: a stub workspace must fail and the official reference must pass.
+  const redGreen = await validateManifest({
+    loaded: preset,
+    root: benchmarkRoot,
+    language: 'python',
+    taskIds: ['transpose'],
+    timeoutMs: 120_000,
+  })
+  check(redGreen.ok === true, 'red/green validation must pass for the built-in preset')
+  check(
+    redGreen.results.every((result) => result.redOk && result.greenOk),
+    'red must fail on the stub and green must pass with the reference solution',
+  )
 }
 
 // The credential check must refuse to start before any episode runs.

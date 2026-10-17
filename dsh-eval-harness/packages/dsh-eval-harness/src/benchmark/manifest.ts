@@ -41,6 +41,13 @@ export interface BenchmarkManifest {
     readonly command: readonly string[]
     readonly result: 'junitxml'
   }
+  /** Optional official reference used for green verification. */
+  readonly reference?: {
+    /** Reference file inside the task directory. */
+    readonly file: string
+    /** Where the reference is copied: first solution file or every solution file. */
+    readonly target: 'solutionFiles[0]' | 'allSolutionFiles'
+  }
   /** Requirements the environment must satisfy; the plugin only probes them. */
   readonly environment: {
     readonly requirements: readonly EnvironmentRequirement[]
@@ -146,8 +153,10 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
   const requirements = requireArray(environment.requirements, 'environment.requirements').map(
     (item, index): EnvironmentRequirement => {
       const requirement = requireObject(item, 'environment.requirements[' + String(index) + ']')
+      const kind = optionalKind(requirement.kind, 'environment.requirements[' + String(index) + '].kind')
       return {
         id: requireString(requirement.id, 'environment.requirements[' + String(index) + '].id'),
+        ...(kind === undefined ? {} : { kind }),
         command: requireString(requirement.command, 'environment.requirements[' + String(index) + '].command'),
         args: requireStringArray(requirement.args, 'environment.requirements[' + String(index) + '].args'),
         reason: requireString(requirement.reason, 'environment.requirements[' + String(index) + '].reason'),
@@ -158,6 +167,7 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
   if (ids.size !== requirements.length) {
     throw new Error('manifest(' + path + '): requirement ids must be unique')
   }
+  const reference = validateReference(root.reference, path)
   return {
     schema: 1,
     name,
@@ -173,8 +183,39 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
     },
     prompt: { files: promptFiles, template },
     verify: { command, result: 'junitxml' },
+    ...(reference === undefined ? {} : { reference }),
     environment: { requirements },
   }
+}
+
+/** Validate the optional green-verification reference block. */
+function validateReference(
+  value: unknown,
+  path: string,
+): { file: string; target: 'solutionFiles[0]' | 'allSolutionFiles' } | undefined {
+  if (value === undefined) return undefined
+  const reference = requireObject(value, 'reference')
+  if (reference.target !== 'solutionFiles[0]' && reference.target !== 'allSolutionFiles') {
+    throw new Error('manifest(' + path + '): reference.target must be solutionFiles[0] or allSolutionFiles')
+  }
+  return { file: requireString(reference.file, 'reference.file'), target: reference.target }
+}
+
+const REQUIREMENT_KINDS = new Set<string>([
+  'executable',
+  'module',
+  'container-runtime',
+  'container-image',
+  'network',
+  'other',
+])
+
+function optionalKind(value: unknown, field: string): EnvironmentRequirement['kind'] | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !REQUIREMENT_KINDS.has(value)) {
+    throw new Error('manifest: ' + field + ' must be one of ' + [...REQUIREMENT_KINDS].join(', '))
+  }
+  return value as EnvironmentRequirement['kind']
 }
 
 function requireObject(value: unknown, field: string): Record<string, unknown> {

@@ -1,9 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { loadAiderBenchmark } from '../benchmark/aider.ts'
 import { loadBenchmarkFromManifest } from '../benchmark/interpreter.ts'
-import { loadManifest } from '../benchmark/manifest.ts'
+import { builtinManifestPath, loadManifest } from '../benchmark/manifest.ts'
 import {
   buildPrompt,
   findSessionLog,
@@ -17,7 +16,7 @@ import { foldMetrics, normalizeEvents, readTrace, type TraceMetrics } from './co
 import { probeRequirements, type EnvironmentProbe, type EnvironmentRequirement } from './environment.ts'
 import type { ModelTarget } from '../model/target.ts'
 import type { LoopGuardLimits, LoopGuardTrip } from './guard.ts'
-import { runVerifier, type VerifyResult } from './verify.ts'
+import { runManifestVerifier, type VerifyResult } from './verify.ts'
 
 /** Explicit run definition. Every field is caller-supplied; nothing is defaulted. */
 export interface RunSpec {
@@ -94,21 +93,17 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   const dshHome = join(runDir, 'dsh-home')
   const profile = materializeProfile(dshHome, spec.profileName, spec.model)
 
-  const benchmark =
+  const loadedManifest =
     spec.manifestPath !== undefined
-      ? await loadBenchmarkFromManifest(
-          loadManifest(spec.manifestPath),
-          spec.benchmarkRoot,
-          spec.language,
-          spec.taskIds,
-          spec.benchmarkRevision,
-        )
-      : await loadAiderBenchmark(
-          spec.benchmarkRoot,
-          spec.language,
-          spec.taskIds,
-          spec.benchmarkRevision,
-        )
+      ? loadManifest(spec.manifestPath)
+      : loadManifest(builtinManifestPath('aider-polyglot'))
+  const benchmark = await loadBenchmarkFromManifest(
+    loadedManifest,
+    spec.benchmarkRoot,
+    spec.language,
+    spec.taskIds,
+    spec.benchmarkRevision,
+  )
 
   // Environment facts are part of the result: a lab-side failure must never be
   // reported as a DSH defect. Preflight fails fast when the environment is not
@@ -194,7 +189,13 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       }
     }
 
-    const verify = runVerifier({ task, workspaceDir, taskDir, timeoutMs: 120_000 })
+    const verify = runManifestVerifier({
+      manifest: loadedManifest.manifest,
+      task,
+      workspaceDir,
+      taskDir,
+      timeoutMs: 120_000,
+    })
     writeJson(join(taskDir, 'checks.json'), verify)
 
     const status: TaskSummary['status'] =

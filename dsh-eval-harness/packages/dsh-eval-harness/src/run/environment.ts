@@ -2,10 +2,21 @@ import { spawnSync } from 'node:child_process'
 
 /** Declared environment requirements for a benchmark and their probe results. */
 
+/** What kind of environment capability a requirement describes. */
+export type EnvironmentRequirementKind =
+  | 'executable'
+  | 'module'
+  | 'container-runtime'
+  | 'container-image'
+  | 'network'
+  | 'other'
+
 /** One requirement a benchmark declares about the environment it runs in. */
 export interface EnvironmentRequirement {
   /** Stable id used in manifests and the dashboard. */
   readonly id: string
+  /** Requirement category; defaults to `executable` for legacy manifests. */
+  readonly kind?: EnvironmentRequirementKind
   /** Probe executable. */
   readonly command: string
   /** Probe arguments; the probe succeeds when the process exits 0. */

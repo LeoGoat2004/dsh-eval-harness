@@ -45,14 +45,20 @@ verify:
     - -q
   result: junitxml
 
+reference:
+  file: .meta/example.py
+  target: solutionFiles[0]
+
 environment:
   requirements:
     - id: python
+      kind: executable
       command: python
       args:
         - --version
       reason: The exercises need a Python runtime
     - id: pytest
+      kind: module
       command: python
       args:
         - -m
