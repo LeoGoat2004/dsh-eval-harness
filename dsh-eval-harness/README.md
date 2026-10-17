@@ -1,156 +1,91 @@
 # dsh-eval-harness
 
+English | [中文](README.zh.md)
+
 A diagnostic evaluation plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).
-It runs a benchmark against a **confirmed** DSH configuration and a **confirmed** model, records the complete
-DSH trace, aligns it with the benchmark's native verifier, and produces a standalone HTML report.
+It runs a benchmark against a DSH setup you confirm, keeps the full DSH trace, and turns the result into a
+standalone HTML report.
 
-The goal is not scoring. It is to answer: *where did the agent first go wrong, was that a model or a Harness
-problem, how did the error propagate, did the agent try to recover, and why do different Harness
-configurations produce different results?*
+> **Early development.** The plugin works, but interfaces, artifacts and the report format may change.
 
-## Status
+## What it does
 
-`v0.1.0` – usable for single-model, single-benchmark diagnostic runs on a user-provided environment.
-
-## Features
-
-- **Three confirmation gates before anything runs** – Harness profile + version, provider + model, benchmark
-  name + language + revision + explicit task list. Nothing is defaulted.
-- **Model is actually pinned** – the chosen provider/model is written into the isolated eval profile, then
-  verified against the real `request/header` in the trace (`report.json.modelVerification`).
-- **Hermetic episodes** – user/project skills and instruction files are disabled; the agent sees only the
-  benchmark workspace. Traces are scanned for user-home paths (`report.json.isolation`).
-- **Loop guard** – per-episode limits on steps and repeated identical tool calls stop runaway episodes
-  instead of burning the whole timeout budget.
-- **Environment preflight** – the benchmark declares its runtime requirements (e.g. `python`, `pytest`); the
-  plugin only probes and reports, it never installs anything.
-- **Attribution layers** – every finding is classified as `harness` / `environment` / `benchmark` / `adapter`
-  so a lab-side problem is never reported as a DSH defect.
-- **Standalone dashboard** – a single offline HTML file with run summary, DSH runtime metrics, benchmark
-  results, and a per-task execution timeline.
+- **You confirm three things first** – harness (profile + version), model (provider + model), and benchmark
+  (name + revision + explicit tasks). Nothing is defaulted.
+- **Runs are hermetic** – no user skills or instruction files leak into the episode; the agent only sees the
+  benchmark workspace.
+- **The model really is the model** – the chosen provider/model is written into the run and verified against
+  the actual request headers in the trace.
+- **Every failure gets a layer** – `harness` / `environment` / `benchmark` / `adapter`, so a lab problem is
+  never blamed on DSH.
+- **One report file** – run summary, DSH runtime metrics, benchmark results, per-task execution timeline.
 
 ## Requirements
 
-- DSH `0.2.x` (the plugin is developed against `0.2.0-rc.2`).
-- Node.js `>= 20` and npm.
-- A DSH profile that already configures the model provider you want to evaluate (e.g. a `llm-pi-ai`
-  provider entry with `apiKeyEnv`), and the corresponding credential in the environment or
-  `~/.dsh/.credentials.yaml`.
-- Benchmark tooling declared by the adapter (for Aider Python tasks: `python` and `pytest`).
+- DSH `0.2.x`
+- Node.js `>= 20`
+- A DSH profile that already configures the model provider you want to evaluate (for example a
+  `siliconflow` provider entry) and its credential
+- Benchmark tooling declared by the adapter (Aider Python: `python` and `pytest`)
 
 ## Install
 
-### As a DSH bundle (Desktop)
-
-Install the package into your profile with the plugin manager, then restart the Harness host:
-
-```text
-plugin_manager  action=install_bundle  target=<path-to-package>
-```
-
-Or with the profile CLI:
-
 ```bash
-dsh plugin --profile <PROFILE> add <path-to-package>
-```
-
-Restart the host after installation so the loader re-reads the bundle.
-
-### From source (development)
-
-```bash
-cd <path-to-package>
+git clone https://github.com/LeoGoat2004/dsh-eval-harness.git
+cd dsh-eval-harness/dsh-eval-harness
 npm install
-npm run typecheck
 npm run build
-npm test
-npm run test:pipeline        # end-to-end pipeline check, no API calls
 ```
 
-## Usage
-
-### 1. Preflight: confirm the three decisions
-
-Before an evaluation, the agent must call the `eval_preflight` tool with all three confirmations:
-
-```text
-eval_preflight {
-  harnessProfile: "<profile dir or name under ~/.dsh/profiles>",
-  dshVersion: "<version under test>",
-  provider: "siliconflow",
-  model: "Qwen/Qwen3-8B",
-  benchmark: "aider-polyglot",
-  language: "python",
-  revision: "<pinned commit>",
-  tasks: ["transpose", "wordy"]
-}
-```
-
-The tool resolves the model from that profile, probes the benchmark's environment requirements and the model
-credential, and returns a plan. `ready=false` means: configure the missing pieces, then call it again.
-`ready=true` means: show the plan to the user and wait for confirmation before running.
-
-### 2. Run one evaluation
+Then install the built bundle into your DSH profile (from the repository root):
 
 ```bash
+cd ..
+dsh plugin --profile <PROFILE> add ./dsh-eval-harness
+```
+
+You can also ask the DSH agent to install it with `plugin_manager action=install_bundle` and the absolute
+path of that `dsh-eval-harness` folder. Restart DSH afterwards.
+
+## Quick start
+
+1. **Confirm the three decisions** – the agent calls `eval_preflight` with the harness profile, provider/model,
+   benchmark name/revision and explicit tasks. It reports missing environment pieces; fix them and call it
+   again until it is ready.
+2. **Start a run** (all values are explicit; there are no defaults). The benchmark checkout can be cloned next
+   to the plugin:
+
+```bash
+git clone https://github.com/Aider-AI/polyglot-benchmark.git
 npm run run:eval -- \
   --harness-profile <PROFILE> \
   --provider siliconflow \
   --model Qwen/Qwen3-8B \
   --benchmark aider-polyglot \
   --language python \
-  --benchmark-root <path-to-benchmark-checkout> \
-  --tasks transpose,wordy,two-bucket \
+  --benchmark-root ../polyglot-benchmark \
+  --tasks transpose,wordy \
   --timeout 600000 \
   --max-steps 120 \
   --max-identical-tool-calls 4 \
   --permission-mode workspace-write
 ```
 
-Every value is explicit; there are no defaults for benchmark, tasks, model, or environment.
+3. **Open the report** – `runs/<run-id>/dashboard/index.html`.
 
-### 3. Read the report
+## Current status
 
-```text
-runs/<run-id>/
-  run.json          # manifest, model target, environment facts, limits
-  preflight.json    # environment checks
-  report.json       # totals, model verification, isolation result
-  tasks/            # per-task workspace, raw trace, events, metrics, checks
-  dashboard/index.html
-```
-
-`run.json`, `report.json` and `dashboard/index.html` are the shareable artifacts; raw traces stay untouched.
-
-## How attribution works
-
-Each tool failure and each failed turn is grouped into a finding with a layer:
-
-| Layer | Meaning | Examples |
-|---|---|---|
-| `harness` | DSH Harness behaviour | approval unavailable in non-interactive runs |
-| `environment` | Evaluation environment | sandbox ACL provisioning, provider rate limits, network egress |
-| `benchmark` | Benchmark itself | verifier errors |
-| `adapter` | This plugin | task materialization problems |
-
-Unrecognized failures stay `harness` and are marked as unclassified rather than guessed.
-
-## Current limitations
-
-- One benchmark adapter: `aider-polyglot` (Python track).
-- Runs are started from the CLI; there is no `eval_run` tool yet.
-- Single run per report; no cross-run comparison dashboard yet.
-- Propagation/recovery analysis is limited to trace evidence; no automated narrative yet.
-- The user provides the execution environment; the plugin records it rather than provisioning it.
-  On Windows, `workspace-write` sandbox provisioning can fail on drives where the account lacks the
-  required ACL rights; use `danger-full-access` or a workspace path with full control, and record it.
+- Supported benchmark: `aider-polyglot` (Python track).
+- Runs are started from the CLI; there is no one-click in-chat run yet.
+- One report per run; cross-run comparison is planned.
+- You provide the execution environment; the plugin records it but does not provision it.
 
 ## Documentation
 
-- [`docs/run-pipeline.md`](docs/run-pipeline.md) – pipeline stages, confirmations, isolation, failure layers.
-- [`docs/run-artifacts.md`](docs/run-artifacts.md) – artifact layout and data contract.
-- [`docs/dashboard-design.md`](docs/dashboard-design.md) – dashboard information architecture.
+- [Pipeline and confirmations](docs/run-pipeline.md)
+- [Run artifacts](docs/run-artifacts.md)
+- [Dashboard design](docs/dashboard-design.md)
 
 ## License
 
-MIT – see [LICENSE](LICENSE).
+MIT
