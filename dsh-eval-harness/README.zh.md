@@ -2,9 +2,17 @@
 
 [English](README.md) | 中文
 
-面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的诊断评测插件：
-用你确认过的 DSH 配置跑一个 benchmark，保留完整 trace，并生成报告，说明失败发生在哪一步、是模型、
-Harness、benchmark 还是环境的问题。
+面向 DSH 的评测插件：用你确认过的 DSH 配置跑 benchmark。它按声明式 manifest 执行 benchmark，
+保留完整 session trace，与 benchmark 自带的验证器对齐，并生成独立的 HTML 报告，说明这次运行
+失败在哪一步、归因到哪一层：模型、Harness、benchmark 还是环境。
+
+## 环境要求
+
+- DSH `0.2.x`
+- Node.js `>= 22.19`
+- DSH profile 里已经配置好要评测的模型 provider
+- 本地有 benchmark 检出，以及描述它的 manifest；benchmark 的运行环境由你或 Harness 提供，
+  插件只声明、检查并记录
 
 ## 安装
 
@@ -16,20 +24,20 @@ npm --prefix dsh-eval-harness run build
 dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 ```
 
-把 `<profile>` 换成你的 DSH profile 名（Desktop 版通常是 `desktop`）。最后一条命令也可以改成在插件
-管理器里把 `dsh-eval-harness` 目录作为 bundle 安装。安装后重启 DSH。
+把 `<profile>` 换成你的 DSH profile 名（通常是 `desktop`），然后重启 DSH。
 
-## 使用
+## 使用流程
 
-打开 DSH，让 agent 运行评测即可。插件会先调用 `eval_preflight`，和你确认 harness、模型与 benchmark，
-并检查环境是否就绪；之后由 agent 执行评测，报告写在 `runs/<run-id>/dashboard/index.html`。
+1. **`eval_preflight`** —— 和你确认 Harness、模型与 benchmark；探测 manifest 声明的环境需求；
+   审计 profile 的隔离风险。缺失的环境只报告，不安装。
+2. **`eval_manifest`** —— 校验 benchmark manifest；可选执行红绿检查（stub 必须失败，官方参考解必须通过）。
+3. **`eval_run`** —— 在后台启动一次评测，返回 job token。
+4. **`eval_status`** —— 查询进度，获取 run 目录、报告路径与看板路径。
 
-## 环境要求
+报告写在 `<run-dir>/dashboard/index.html`。
 
-- DSH `0.2.x`，Node.js `>= 20`
-- DSH profile 里已经配置好要评测的模型 provider
-- 有一个由声明式 manifest 描述的 benchmark（host 或 container 执行）；环境要求由 manifest 声明，
-  运行前由插件检查
+benchmark 在宿主机还是容器内执行，由它的 manifest 声明。插件不会拉取或构建镜像、不安装依赖、
+不改 benchmark：环境与 manifest 不符时如实报告并拒绝运行。
 
 ## 许可证
 
