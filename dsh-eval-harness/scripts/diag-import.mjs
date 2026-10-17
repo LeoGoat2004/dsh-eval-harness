@@ -50,6 +50,22 @@ if (typeof preflightFactory === 'function') {
   )
 }
 
+const manifestFactory = module.createEvalManifestTool ?? plugin?.createEvalManifestTool
+check(typeof manifestFactory === 'function', 'bundle must export createEvalManifestTool()')
+if (typeof manifestFactory === 'function') {
+  const tool = manifestFactory()
+  check(tool?.name === 'eval_manifest', 'manifest tool name must be eval_manifest')
+  check(typeof tool?.execute === 'function', 'manifest tool must expose execute()')
+}
+
+const runFactory = module.createEvalRunTool ?? plugin?.createEvalRunTool
+check(typeof runFactory === 'function', 'bundle must export createEvalRunTool()')
+if (typeof runFactory === 'function') {
+  const tool = runFactory({ concurrency: 4, outputRoot: '', dshBin: '' })
+  check(tool?.name === 'eval_run', 'run tool name must be eval_run')
+  check(typeof tool?.execute === 'function', 'run tool must expose execute()')
+}
+
 if (failures.length > 0) {
   console.error('IMPORT CONTRACT FAIL')
   for (const failure of failures) console.error('  - ' + failure)

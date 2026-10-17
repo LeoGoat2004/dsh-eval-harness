@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadAiderBenchmark } from '../benchmark/aider.ts'
+import { loadBenchmarkFromManifest } from '../benchmark/interpreter.ts'
+import { loadManifest } from '../benchmark/manifest.ts'
 import {
   buildPrompt,
   findSessionLog,
@@ -33,6 +35,8 @@ export interface RunSpec {
   readonly env: NodeJS.ProcessEnv
   /** Confirmed model target: pinned into the eval profile and verified from the trace. */
   readonly model: ModelTarget
+  /** Optional declarative benchmark manifest; omitted uses the built-in preset. */
+  readonly manifestPath?: string
   /** Explicit circuit-breaker limits for each episode. */
   readonly guard: LoopGuardLimits
 }
@@ -90,12 +94,21 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   const dshHome = join(runDir, 'dsh-home')
   const profile = materializeProfile(dshHome, spec.profileName, spec.model)
 
-  const benchmark = await loadAiderBenchmark(
-    spec.benchmarkRoot,
-    spec.language,
-    spec.taskIds,
-    spec.benchmarkRevision,
-  )
+  const benchmark =
+    spec.manifestPath !== undefined
+      ? await loadBenchmarkFromManifest(
+          loadManifest(spec.manifestPath),
+          spec.benchmarkRoot,
+          spec.language,
+          spec.taskIds,
+          spec.benchmarkRevision,
+        )
+      : await loadAiderBenchmark(
+          spec.benchmarkRoot,
+          spec.language,
+          spec.taskIds,
+          spec.benchmarkRevision,
+        )
 
   // Environment facts are part of the result: a lab-side failure must never be
   // reported as a DSH defect. Preflight fails fast when the environment is not
@@ -120,6 +133,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     runId,
     benchmark: benchmark.name,
     benchmarkRevision: benchmark.revision,
+    manifestPath: spec.manifestPath ?? null,
     language: benchmark.language,
     tasks: [...benchmark.tasks.map((task) => task.id)],
     dshVersion: spec.dshVersion,

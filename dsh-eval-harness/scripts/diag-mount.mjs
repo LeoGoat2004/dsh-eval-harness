@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { builtinManifestPath } from '../packages/dsh-eval-harness/lib/benchmark/manifest.js'
 import { BUNDLE_DIR, ROWS } from './registry.mjs'
 
 const entry = join(BUNDLE_DIR, 'lib', 'index.js')
@@ -37,15 +38,16 @@ if (ctx.tools === undefined) {
 
 const module = await import(pathToFileURL(entry).href)
 const plugin = module.default ?? module
-ctx.plugin(plugin)
+ctx.plugin(plugin, { concurrency: 4, outputRoot: '', dshBin: '' })
 await new Promise((resolve) => setTimeout(resolve, 50))
 
 const names = ctx.tools.registered.map((definition) => definition.name)
 const expectedNames = new Set(ROWS.map((row) => row.plugin))
 const failures = []
 if (!expectedNames.has(plugin.name)) failures.push('plugin name is not a registered row plugin')
-if (!names.includes('eval_status')) failures.push('apply() did not register eval_status')
-if (!names.includes('eval_preflight')) failures.push('apply() did not register eval_preflight')
+for (const tool of ['eval_status', 'eval_preflight', 'eval_manifest', 'eval_run']) {
+  if (!names.includes(tool)) failures.push('apply() did not register ' + tool)
+}
 
 // Exercise the tool body too: registration alone does not prove `execute()` works.
 const definition = ctx.tools.registered.find((candidate) => candidate.name === 'eval_status')
@@ -57,7 +59,59 @@ if (definition !== undefined) {
     failures.push('eval_status execute() returned the wrong plugin identity')
   } else if (value.config === null || typeof value.config !== 'object') {
     failures.push('eval_status execute() must report the effective config')
+  } else if (!Array.isArray(value.jobs)) {
+    failures.push('eval_status execute() must report the tracked jobs array')
   }
+}
+
+const manifestTool = ctx.tools.registered.find((candidate) => candidate.name === 'eval_manifest')
+if (manifestTool === undefined) {
+  failures.push('eval_manifest definition is missing')
+} else {
+  const manifestPath = builtinManifestPath('aider-polyglot')
+  const value = await manifestTool.execute({ manifestPath, language: 'python' }, {})
+  if (value?.valid !== true) failures.push('eval_manifest must validate the built-in preset')
+  if ((value?.requirements ?? []).length === 0) failures.push('eval_manifest must report environment requirements')
+  let rejected = false
+  try {
+    await manifestTool.execute(
+      { manifestPath: join(tmpdir(), 'dsh-eval-missing-' + String(Date.now()) + '.yml'), language: 'python' },
+      {},
+    )
+  } catch {
+    rejected = true
+  }
+  if (!rejected) failures.push('eval_manifest must reject a missing manifest file')
+}
+
+const runTool = ctx.tools.registered.find((candidate) => candidate.name === 'eval_run')
+if (runTool === undefined) {
+  failures.push('eval_run definition is missing')
+} else {
+  let refused = false
+  try {
+    await runTool.execute(
+      {
+        harnessProfile: 'missing-profile',
+        dshVersion: 'self-check',
+        provider: 'siliconflow',
+        model: 'Qwen/Qwen3-8B',
+        manifestPath: builtinManifestPath('aider-polyglot'),
+        language: 'python',
+        revision: 'self-check',
+        tasks: ['transpose'],
+        benchmarkRoot: '.',
+        timeoutMs: 1000,
+        maxSteps: 10,
+        maxIdenticalToolCalls: 2,
+        permissionMode: 'workspace-write',
+      },
+      {},
+    )
+  } catch {
+    refused = true
+  }
+  if (!refused) failures.push('eval_run must refuse when the plugin config has no dshBin')
 }
 
 const preflight = ctx.tools.registered.find((candidate) => candidate.name === 'eval_preflight')
@@ -110,6 +164,12 @@ if (preflight === undefined) {
     }
     if (value?.plan?.benchmark?.tasks?.length !== 1) {
       failures.push('eval_preflight must echo the explicit task list in the plan')
+    }
+    if (value?.harnessAudit?.clean !== true) {
+      failures.push('eval_preflight must report a clean harness audit for an isolated profile fixture')
+    }
+    if (!Array.isArray(value?.harnessAudit?.checks) || value.harnessAudit.checks.length === 0) {
+      failures.push('eval_preflight must report harness audit checks')
     }
     let rejectedBenchmark = false
     try {

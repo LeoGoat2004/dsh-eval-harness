@@ -1,10 +1,20 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Config as EvalConfig } from './config.ts'
-import { createEvalPreflightTool, createEvalStatusTool } from './tools.ts'
+import {
+  createEvalManifestTool,
+  createEvalPreflightTool,
+  createEvalRunTool,
+  createEvalStatusTool,
+} from './tools.ts'
 
 export { Config } from './config.ts'
-export { createEvalPreflightTool, createEvalStatusTool } from './tools.ts'
-export type { EvalPreflightResult, EvalStatus } from './tools.ts'
+export {
+  createEvalManifestTool,
+  createEvalPreflightTool,
+  createEvalRunTool,
+  createEvalStatusTool,
+} from './tools.ts'
+export type { EvalManifestResult, EvalPreflightResult, EvalRunResult, EvalStatus } from './tools.ts'
 
 /** Plugin identity the loader and the patch row agree on. */
 export const name = 'eval-harness-run'
@@ -20,4 +30,6 @@ export const inject = ['tools']
 export function apply(ctx: Context, config: EvalConfig): void {
   ctx.tools.register(createEvalStatusTool(config))
   ctx.tools.register(createEvalPreflightTool())
+  ctx.tools.register(createEvalManifestTool())
+  ctx.tools.register(createEvalRunTool(config))
 }
