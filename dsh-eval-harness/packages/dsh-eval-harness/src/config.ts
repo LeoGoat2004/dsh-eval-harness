@@ -2,8 +2,6 @@ import Schema from '@deepseek-ai/schemastery'
 
 /** Runtime configuration of the eval harness row. */
 export interface Config {
-  /** Default number of benchmark tasks executed in parallel. */
-  concurrency: number
   /** Root directory for run artifacts; empty means the tool requires an explicit outputDir. */
   outputRoot: string
   /** dsh launcher of the Harness under test; required by the eval_run tool. */
@@ -16,7 +14,6 @@ export interface Config {
  * in `apply()`.
  */
 export const Config: Schema<Config> = Schema.object({
-  concurrency: Schema.number().min(1).max(16).default(4),
   outputRoot: Schema.string().default(''),
   dshBin: Schema.string().default(''),
 })

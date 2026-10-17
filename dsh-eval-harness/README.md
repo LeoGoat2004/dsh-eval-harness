@@ -13,7 +13,7 @@ git clone <repository-url>
 cd dsh-eval-harness
 npm --prefix dsh-eval-harness install
 npm --prefix dsh-eval-harness run build
-dsh plugin --profile <profile> add ./dsh-eval-harness
+dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 ```
 
 Replace `<profile>` with your DSH profile name (the Desktop profile is usually `desktop`). You can also

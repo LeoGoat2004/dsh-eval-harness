@@ -32,7 +32,7 @@ check(
 const factory = module.createEvalStatusTool ?? plugin?.createEvalStatusTool
 check(typeof factory === 'function', 'bundle must export createEvalStatusTool()')
 if (typeof factory === 'function') {
-  const tool = factory({ concurrency: 4, outputRoot: '' })
+  const tool = factory({ outputRoot: '' })
   check(typeof tool?.name === 'string' && tool.name.startsWith('eval_'), 'tool names must start with eval_')
   check(typeof tool?.execute === 'function', 'tool must expose execute()')
   check(typeof tool?.description === 'string' && tool.description.length > 0, 'tool needs a description')
@@ -61,7 +61,7 @@ if (typeof manifestFactory === 'function') {
 const runFactory = module.createEvalRunTool ?? plugin?.createEvalRunTool
 check(typeof runFactory === 'function', 'bundle must export createEvalRunTool()')
 if (typeof runFactory === 'function') {
-  const tool = runFactory({ concurrency: 4, outputRoot: '', dshBin: '' })
+  const tool = runFactory({ outputRoot: '', dshBin: '' })
   check(tool?.name === 'eval_run', 'run tool name must be eval_run')
   check(typeof tool?.execute === 'function', 'run tool must expose execute()')
 }

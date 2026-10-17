@@ -10,6 +10,7 @@ export interface RunJob {
   runId?: string
   runDir?: string
   reportPath?: string
+  dashboardPath?: string
   totals?: unknown
   error?: string
 }
@@ -23,7 +24,9 @@ const jobs = new Map<string, RunJob>()
  * @param token - optional caller-supplied token; generated when omitted.
  * @returns the tracked job record (state `running`).
  */
-export function startRunJob(run: () => Promise<{ runId: string; runDir: string; reportPath: string; totals: unknown }>): RunJob {
+export function startRunJob(
+  run: () => Promise<{ runId: string; runDir: string; reportPath: string; totals: unknown; dashboardPath?: string }>,
+): RunJob {
   const token = 'run-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
   const job: RunJob = { token, kind: 'evaluation', startedAt: Date.now(), state: 'running' }
   jobs.set(token, job)
@@ -34,6 +37,7 @@ export function startRunJob(run: () => Promise<{ runId: string; runDir: string; 
       job.runId = summary.runId
       job.runDir = summary.runDir
       job.reportPath = summary.reportPath
+      job.dashboardPath = summary.dashboardPath
       job.totals = summary.totals
     })
     .catch((error: unknown) => {

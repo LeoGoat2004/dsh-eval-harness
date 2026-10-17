@@ -7,7 +7,6 @@ import { getRunJob, listRunJobs } from '../run/jobs.ts'
 export interface EvalStatus {
   readonly plugin: 'dsh-eval-harness'
   readonly config: {
-    readonly concurrency: number
     readonly outputRoot: string
     readonly dshBin: string
   }
@@ -23,6 +22,7 @@ export interface EvalStatus {
     runId?: string
     runDir?: string
     reportPath?: string
+    dashboardPath?: string
     error?: string
   }[]
 }
@@ -55,8 +55,7 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
             additionalProperties: false,
             required: true,
             properties: {
-              concurrency: { type: 'integer', required: true },
-              outputRoot: { type: 'string', required: true },
+                  outputRoot: { type: 'string', required: true },
               dshBin: { type: 'string', required: true },
             },
           },
@@ -83,6 +82,7 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
                 runId: { type: 'string' },
                 runDir: { type: 'string' },
                 reportPath: { type: 'string' },
+        dashboardPath: { type: 'string' },
                 error: { type: 'string' },
               },
             },
@@ -101,7 +101,7 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
           : [getRunJob(input.token)].filter((job): job is NonNullable<typeof job> => job !== undefined)
       return {
         plugin: 'dsh-eval-harness',
-        config: { concurrency: config.concurrency, outputRoot: config.outputRoot, dshBin: config.dshBin },
+        config: { outputRoot: config.outputRoot, dshBin: config.dshBin },
         runtime: { node: process.version, platform: process.platform },
         jobs: jobs.map((job) => ({
           token: job.token,
@@ -111,6 +111,7 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
           ...(job.runId === undefined ? {} : { runId: job.runId }),
           ...(job.runDir === undefined ? {} : { runDir: job.runDir }),
           ...(job.reportPath === undefined ? {} : { reportPath: job.reportPath }),
+      ...(job.dashboardPath === undefined ? {} : { dashboardPath: job.dashboardPath }),
           ...(job.error === undefined ? {} : { error: job.error }),
         })),
       }

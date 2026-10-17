@@ -38,7 +38,7 @@ if (ctx.tools === undefined) {
 
 const module = await import(pathToFileURL(entry).href)
 const plugin = module.default ?? module
-ctx.plugin(plugin, { concurrency: 4, outputRoot: '', dshBin: '' })
+ctx.plugin(plugin, { outputRoot: '', dshBin: '' })
 await new Promise((resolve) => setTimeout(resolve, 50))
 
 const names = ctx.tools.registered.map((definition) => definition.name)

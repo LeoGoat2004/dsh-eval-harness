@@ -1,6 +1,9 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { existsSync } from 'node:fs'
+import { dirname, resolve as resolvePath } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { Config } from '../config.ts'
@@ -139,8 +142,8 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       env[target.apiKeyEnv] = credential
       env.DSH_PERMISSION_MODE = input.permissionMode
       const startedAt = Date.now()
-      const job = startRunJob(() =>
-        runEvaluation({
+      const job = startRunJob(async () => {
+        const summary = await runEvaluation({
           benchmarkRoot,
           benchmarkRevision: input.revision,
           language: input.language,
@@ -155,8 +158,10 @@ export function createEvalRunTool(config: Config): ToolDefinition {
           model: target,
           manifestPath: input.manifestPath,
           guard: { maxSteps: input.maxSteps, maxIdenticalToolCalls: input.maxIdenticalToolCalls },
-        }),
-      )
+        })
+        const dashboardPath = generateDashboard(summary.runDir)
+        return dashboardPath === undefined ? summary : { ...summary, dashboardPath }
+      })
       return {
         token: job.token,
         state: 'running',
@@ -172,6 +177,18 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       }
     },
   })
+}
+
+/** Generate the standalone dashboard for one run; undefined when unavailable. */
+function generateDashboard(runDir: string): string | undefined {
+  const packageRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const workspaceRoot = resolvePath(packageRoot, '..', '..')
+  const script = resolvePath(workspaceRoot, 'scripts', 'dashboard.mjs')
+  const dist = resolvePath(workspaceRoot, 'dashboard', 'dist', 'index.html')
+  if (!existsSync(script) || !existsSync(dist)) return undefined
+  spawnSync(process.execPath, [script, '--run', runDir], { encoding: 'utf8' })
+  const html = resolvePath(runDir, 'dashboard', 'index.html')
+  return existsSync(html) ? html : undefined
 }
 
 /** Resolve a profile argument to an existing profile directory. */
