@@ -6,24 +6,25 @@ Diagnostic evaluation plugin for the [DeepSeek Harness](https://github.com/deeps
 run a benchmark against a DSH setup you confirm, keep the full trace, and get a report that shows where it
 failed and whether the cause was the model, the Harness, the benchmark, or the environment.
 
-**Status: early development.** Only `aider-polyglot` (Python) is supported today, and the report format may
-change.
-
 ## Install
 
 ```bash
 git clone https://github.com/LeoGoat2004/dsh-eval-harness.git
-cd dsh-eval-harness/dsh-eval-harness
-npm install && npm run build
+cd dsh-eval-harness
+npm --prefix dsh-eval-harness install
+npm --prefix dsh-eval-harness run build
+dsh plugin --profile <profile> add ./dsh-eval-harness
 ```
 
-Then install the built folder as a DSH bundle (plugin manager → install bundle) and restart DSH.
+Replace `<profile>` with your DSH profile name (the Desktop profile is usually `desktop`). You can also
+install the `dsh-eval-harness` folder through the plugin manager (`install bundle`) instead of the last
+command. Restart DSH after installing.
 
 ## Use
 
-Open DSH and ask the agent to run an evaluation. The plugin first calls `eval_preflight` to confirm the
-Harness, the model and the benchmark with you, and reports anything the environment is missing. After that,
-the agent runs the evaluation and opens the report in `runs/<run-id>/dashboard/index.html`.
+Open DSH and ask the agent to run an evaluation. The plugin calls `eval_preflight` first to confirm the
+Harness, the model and the benchmark with you, and reports anything the environment is missing. Then the
+agent runs the evaluation and the report is written to `runs/<run-id>/dashboard/index.html`.
 
 ## Requirements
 
