@@ -58,6 +58,11 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       maxSteps: { type: 'integer', required: true, description: '熔断：最大步数' },
       maxIdenticalToolCalls: { type: 'integer', required: true, description: '熔断：连续相同工具调用上限' },
       permissionMode: { type: 'string', required: true, description: 'workspace-write 或 danger-full-access' },
+      harnessMode: {
+        type: 'string',
+        required: true,
+        description: 'profile-snapshot（复制并运行用户确认的 profile）或 minimal-control（固定最小对照）',
+      },
     },
     output: {
       schema: {
@@ -110,6 +115,7 @@ export function createEvalRunTool(config: Config): ToolDefinition {
         readonly maxSteps: number
         readonly maxIdenticalToolCalls: number
         readonly permissionMode: string
+        readonly harnessMode: string
       }
       if (config.dshBin === '') {
         throw new Error(
@@ -118,6 +124,9 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       }
       if (input.permissionMode !== 'workspace-write' && input.permissionMode !== 'danger-full-access') {
         throw new Error('eval_run: permissionMode must be workspace-write or danger-full-access')
+      }
+      if (input.harnessMode !== 'profile-snapshot' && input.harnessMode !== 'minimal-control') {
+        throw new Error('eval_run: harnessMode must be profile-snapshot or minimal-control')
       }
       const profileDir = resolveProfileDir(input.harnessProfile)
       const target = resolveModelTarget(profileDir, input.provider, input.model)
@@ -154,6 +163,8 @@ export function createEvalRunTool(config: Config): ToolDefinition {
           profileName: 'eval-run',
           timeoutMs: input.timeoutMs,
           permissionMode: input.permissionMode as 'workspace-write' | 'danger-full-access',
+          harnessMode: input.harnessMode as 'profile-snapshot' | 'minimal-control',
+          harnessProfileDir: profileDir,
           env,
           model: target,
           manifestPath: input.manifestPath,

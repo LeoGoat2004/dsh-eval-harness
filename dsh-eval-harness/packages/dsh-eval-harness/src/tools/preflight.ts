@@ -19,7 +19,7 @@ export interface PreflightRequirement {
 /** Canonical output value of the `eval_preflight` tool. */
 export interface EvalPreflightResult {
   plan: {
-    harness: { profile: string; dshVersion: string }
+    harness: { profile: string; dshVersion: string; mode: string }
     model: {
       provider: string
       model: string
@@ -70,6 +70,11 @@ export function createEvalPreflightTool(): ToolDefinition {
       language: { type: 'string', required: true, description: '语言轨道，如 python' },
       revision: { type: 'string', required: true, description: 'benchmark 的 pinned revision' },
       tasks: { type: 'array', required: true, items: { type: 'string' }, description: '显式任务列表' },
+      harnessMode: {
+        type: 'string',
+        required: true,
+        description: 'profile-snapshot 或 minimal-control；决定整轮评测的被测 harness',
+      },
     },
     output: {
       schema: {
@@ -87,6 +92,7 @@ export function createEvalPreflightTool(): ToolDefinition {
                 required: true,
                 properties: {
                   profile: { type: 'string', required: true },
+                  mode: { type: 'string', required: true },
                   dshVersion: { type: 'string', required: true },
                 },
               },
@@ -202,12 +208,16 @@ export function createEvalPreflightTool(): ToolDefinition {
         readonly provider: string
         readonly model: string
         readonly manifestPath: string
+        readonly harnessMode: string
         readonly language: string
         readonly revision: string
         readonly tasks: readonly string[]
       }
       const profileDir = resolveProfileDir(input.harnessProfile)
       const target = resolveModelTarget(profileDir, input.provider, input.model)
+      if (input.harnessMode !== 'profile-snapshot' && input.harnessMode !== 'minimal-control') {
+        throw new Error('eval_preflight: harnessMode must be profile-snapshot or minimal-control')
+      }
       const manifest = loadManifest(input.manifestPath).manifest
       const requirements = manifestRequirements(manifest)
       const probe = probeRequirements(requirements)
@@ -224,7 +234,7 @@ export function createEvalPreflightTool(): ToolDefinition {
       const ready = missing.length === 0 && credential.present
       return {
         plan: {
-          harness: { profile: profileDir, dshVersion: input.dshVersion },
+          harness: { profile: profileDir, dshVersion: input.dshVersion, mode: input.harnessMode },
           model: {
             provider: target.provider,
             model: target.model,

@@ -35,6 +35,11 @@ if (permissionMode !== 'workspace-write' && permissionMode !== 'danger-full-acce
   console.error('run-eval: --permission-mode must be workspace-write or danger-full-access')
   process.exit(2)
 }
+const harnessMode = requireArg('harness-mode', args['harness-mode'])
+if (harnessMode !== 'profile-snapshot' && harnessMode !== 'minimal-control') {
+  console.error('run-eval: --harness-mode must be profile-snapshot or minimal-control')
+  process.exit(2)
+}
 const outputDir = resolve(args.out ?? join(workspaceRoot, '..', 'runs'))
 const dshBin = resolve(args['dsh-bin'] ?? join(workspaceRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))
 const profileName = args.profile ?? 'eval-m1'
@@ -93,6 +98,8 @@ const summary = await runEvaluation({
   profileName,
   timeoutMs,
   permissionMode,
+  harnessMode,
+  harnessProfileDir: harnessProfile,
   env: childEnv,
   model: target,
   guard,

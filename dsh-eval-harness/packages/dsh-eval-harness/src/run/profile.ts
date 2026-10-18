@@ -1,15 +1,36 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
+import { parse as parseYaml } from 'yaml'
 import type { BenchmarkTask } from '../benchmark/interpreter.ts'
 import type { ModelTarget } from '../model/target.ts'
 import { createLoopGuard, type LoopGuardLimits, type LoopGuardTrip } from './guard.ts'
+
+/** How the harness under test is chosen. */
+export type HarnessMode = 'profile-snapshot' | 'minimal-control'
+
+/** Frozen description of the harness under test, recorded with every run. */
+export interface HarnessSnapshot {
+  readonly mode: HarnessMode
+  /** Source profile copied in `profile-snapshot` mode; null for `minimal-control`. */
+  readonly sourceProfileDir: string | null
+  readonly bundles: readonly string[]
+  /** Whether the snapshot reuses the source profile's installed modules. */
+  readonly nodeModulesLinked: boolean
+  /** Rows the snapshot refuses to copy (reserved for future bundle filtering). */
+  readonly excludedRows: readonly string[]
+  /** SHA-256 over the frozen profile files and bundles. */
+  readonly digest: string
+  readonly files: Readonly<Record<string, string>>
+}
 
 /** Absolute paths of the private Harness home materialized for one run. */
 export interface EvalProfilePaths {
   readonly dshHome: string
   readonly profileDir: string
   readonly profileName: string
+  readonly snapshot: HarnessSnapshot
 }
 
 /** Result of one spawned `dsh` episode. */
@@ -25,31 +46,8 @@ export interface EpisodeProcessResult {
 
 const EVAL_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless']
 
-/**
- * Materialize the private eval profile used to run evaluated episodes.
- *
- * The profile is a normal DSH profile. It disables the credentials and account
- * rows so the provider reads its credential from the child environment, pins
- * the confirmed model target through `agent-default-model`, and keeps sessions
- * in this run's private home.
- * @param dshHome - private Harness home for this run.
- * @param profileName - profile name to create inside that home.
- * @param target - resolved model target (provider, model, endpoint, credential env).
- * @returns absolute paths of the created profile.
- */
-export function materializeProfile(
-  dshHome: string,
-  profileName: string,
-  target: ModelTarget,
-): EvalProfilePaths {
-  const profileDir = join(dshHome, 'profiles', profileName)
-  mkdirSync(profileDir, { recursive: true })
-  writeJson(join(profileDir, 'package.json'), {
-    name: 'dsh-profile-' + profileName,
-    private: true,
-    dsh: { profile: { bundles: EVAL_BUNDLES } },
-  })
-  writeFileSync(join(profileDir, 'cordis.yml'), '[]\n')
+/** Rows appended to every eval profile: credential isolation, no skills, fixed model. */
+function evalRows(target: ModelTarget): string[] {
   const rows: string[] = [
     "# Eval profile: credentials come from the child environment, not the user's home.",
     '- id: credentials',
@@ -105,8 +103,137 @@ export function materializeProfile(
     '    model: ' + yaml(target.model),
     '',
   )
-  writeFileSync(join(profileDir, 'cordis.patch.yml'), rows.join('\n'))
-  return { dshHome, profileDir, profileName }
+  return rows
+}
+
+/**
+ * Materialize the private eval profile used to run evaluated episodes.
+ *
+ * `minimal-control` uses the fixed base + headless layers as a control arm.
+ * `profile-snapshot` copies the user-confirmed profile (bundles, patch rows,
+ * dependencies) into the private home and appends trace/isolation/model rows,
+ * so the evaluated harness is the one the user selected.
+ * @param dshHome - private Harness home for this run.
+ * @param profileName - profile name to create inside that home.
+ * @param target - resolved model target (provider, model, endpoint, credential env).
+ * @param options - harness mode and, for snapshots, the source profile directory.
+ * @returns absolute paths of the created profile plus its frozen snapshot.
+ */
+export function materializeProfile(
+  dshHome: string,
+  profileName: string,
+  target: ModelTarget,
+  options: { readonly mode: HarnessMode; readonly sourceProfileDir?: string },
+): EvalProfilePaths {
+  const profileDir = join(dshHome, 'profiles', profileName)
+  mkdirSync(profileDir, { recursive: true })
+  if (options.mode === 'profile-snapshot') {
+    return materializeSnapshot(profileDir, profileName, dshHome, target, options.sourceProfileDir)
+  }
+  writeJson(join(profileDir, 'package.json'), {
+    name: 'dsh-profile-' + profileName,
+    private: true,
+    dsh: { profile: { bundles: EVAL_BUNDLES } },
+  })
+  writeFileSync(join(profileDir, 'cordis.yml'), '[]\n')
+  writeFileSync(join(profileDir, 'cordis.patch.yml'), evalRows(target).join('\n'))
+  const snapshot: HarnessSnapshot = {
+    mode: 'minimal-control',
+    sourceProfileDir: null,
+    bundles: [...EVAL_BUNDLES],
+    nodeModulesLinked: false,
+    excludedRows: [],
+    digest: digestOf({ mode: 'minimal-control', bundles: EVAL_BUNDLES, rows: evalRows(target) }),
+    files: {},
+  }
+  return { dshHome, profileDir, profileName, snapshot }
+}
+
+/** Copy a user profile into the private home and append isolation/model rows. */
+function materializeSnapshot(
+  profileDir: string,
+  profileName: string,
+  dshHome: string,
+  target: ModelTarget,
+  sourceProfileDir: string | undefined,
+): EvalProfilePaths {
+  if (sourceProfileDir === undefined || !existsSync(sourceProfileDir)) {
+    throw new Error('profile-snapshot mode requires an existing source profile directory')
+  }
+  const sourcePackagePath = join(sourceProfileDir, 'package.json')
+  if (!existsSync(sourcePackagePath)) {
+    throw new Error('profile-snapshot: source profile has no package.json: ' + sourceProfileDir)
+  }
+  const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, 'utf8')) as Record<string, unknown>
+  const bundles = readBundles(sourcePackage)
+  if (bundles.length === 0) {
+    throw new Error('profile-snapshot: source profile declares no dsh.profile.bundles')
+  }
+  const sourceCordis = readIfExists(join(sourceProfileDir, 'cordis.yml')) ?? '[]\n'
+  const sourcePatch = readIfExists(join(sourceProfileDir, 'cordis.patch.yml')) ?? ''
+  const appendedRows = evalRows(target).join('\n')
+  const patchText = sourcePatch.trim() === '' ? appendedRows : sourcePatch.trimEnd() + '\n' + appendedRows
+  parseYaml(patchText) // fail fast when the source patch is not valid YAML
+  writeJson(join(profileDir, 'package.json'), {
+    ...sourcePackage,
+    name: 'dsh-profile-' + profileName,
+    private: true,
+    dsh: { profile: { ...(isObject(sourcePackage.dsh) ? sourcePackage.dsh : {}), bundles } },
+  })
+  writeFileSync(join(profileDir, 'cordis.yml'), sourceCordis)
+  writeFileSync(join(profileDir, 'cordis.patch.yml'), patchText)
+  let nodeModulesLinked = false
+  const sourceModules = join(sourceProfileDir, 'node_modules')
+  const targetModules = join(profileDir, 'node_modules')
+  if (existsSync(sourceModules) && !existsSync(targetModules)) {
+    try {
+      symlinkSync(sourceModules, targetModules, 'junction')
+      nodeModulesLinked = true
+    } catch {
+      nodeModulesLinked = false
+    }
+  }
+  const snapshot: HarnessSnapshot = {
+    mode: 'profile-snapshot',
+    sourceProfileDir,
+    bundles,
+    nodeModulesLinked,
+    excludedRows: [],
+    digest: digestOf({ mode: 'profile-snapshot', bundles, cordis: sourceCordis, patch: patchText }),
+    files: {
+      'package.json': sha256(readFileSync(sourcePackagePath, 'utf8')),
+      'cordis.yml': sha256(sourceCordis),
+      'cordis.patch.yml': sha256(sourcePatch),
+    },
+  }
+  return { dshHome, profileDir, profileName, snapshot }
+}
+
+/** Read `dsh.profile.bundles` from a profile package.json. */
+function readBundles(pkg: Record<string, unknown>): string[] {
+  const dsh = pkg.dsh
+  if (!isObject(dsh)) return []
+  const profile = dsh.profile
+  if (!isObject(profile)) return []
+  const bundles = profile.bundles
+  if (!Array.isArray(bundles)) return []
+  return bundles.filter((item): item is string => typeof item === 'string' && item !== '')
+}
+
+function readIfExists(path: string): string | undefined {
+  return existsSync(path) ? readFileSync(path, 'utf8') : undefined
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
+}
+
+function digestOf(value: unknown): string {
+  return sha256(JSON.stringify(value))
 }
 
 /** Quote one scalar as a YAML-safe double-quoted string. */

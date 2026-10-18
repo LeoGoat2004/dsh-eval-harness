@@ -178,6 +178,7 @@ if (preflight === undefined) {
     language: 'node',
     revision: 'self-check',
     tasks: ['fixture-task'],
+    harnessMode: 'minimal-control',
   }
   try {
     const value = await preflight.execute(planArgs, {})

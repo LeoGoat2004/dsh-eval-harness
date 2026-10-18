@@ -10,6 +10,7 @@ import {
   runEpisode,
   writeJson,
   writeTaskOverlay,
+  type HarnessMode,
 } from './profile.ts'
 import { foldMetrics, normalizeEvents, readTrace, type TraceMetrics } from './collect.ts'
 import {
@@ -43,6 +44,10 @@ export interface RunSpec {
   readonly model: ModelTarget
   /** Declarative benchmark manifest; every run names its benchmark explicitly. */
   readonly manifestPath: string
+  /** Which harness arm is evaluated: the user's profile snapshot or the minimal control. */
+  readonly harnessMode: HarnessMode
+  /** Source profile directory; required for `profile-snapshot`. */
+  readonly harnessProfileDir?: string
   /** Explicit circuit-breaker limits for each episode. */
   readonly guard: LoopGuardLimits
 }
@@ -112,7 +117,10 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   const runDir = join(spec.outputDir, runId)
   mkdirSync(join(runDir, 'tasks'), { recursive: true })
   const dshHome = join(runDir, 'dsh-home')
-  const profile = materializeProfile(dshHome, spec.profileName, spec.model)
+  const profile = materializeProfile(dshHome, spec.profileName, spec.model, {
+    mode: spec.harnessMode,
+    ...(spec.harnessProfileDir === undefined ? {} : { sourceProfileDir: spec.harnessProfileDir }),
+  })
 
   // Environment facts are part of the result: a lab-side failure must never be
   // reported as a DSH defect. Preflight fails fast when the environment is not
@@ -168,6 +176,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     dshVersion: spec.dshVersion,
     dshBin: spec.dshBin,
     profile: profile.profileName,
+    harness: profile.snapshot,
     backend: 'local',
     model: spec.model,
     timeoutMs: spec.timeoutMs,
@@ -358,7 +367,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       backend: 'local',
     },
     benchmark: { name: benchmark.name, language: benchmark.language, tasks: benchmark.tasks.map((task) => task.id) },
-    config: { dshVersion: spec.dshVersion, profile: profile.profileName, model: spec.model, backend: 'local', guard: spec.guard },
+    config: { dshVersion: spec.dshVersion, profile: profile.profileName, harness: profile.snapshot, model: spec.model, backend: 'local', guard: spec.guard },
     environment: { recorded: true, ...preflight.environment },
     modelVerification: summarizeModelVerification(spec.model, summaries),
     isolation: summarizeIsolation(summaries),
@@ -618,6 +627,14 @@ function validateSpec(spec: RunSpec): void {
   }
   if (spec.permissionMode !== 'workspace-write' && spec.permissionMode !== 'danger-full-access') {
     throw new Error('run: permissionMode must be workspace-write or danger-full-access')
+  }
+  if (spec.harnessMode !== 'profile-snapshot' && spec.harnessMode !== 'minimal-control') {
+    throw new Error('run: harnessMode must be profile-snapshot or minimal-control')
+  }
+  if (spec.harnessMode === 'profile-snapshot') {
+    if (spec.harnessProfileDir === undefined || !existsSync(spec.harnessProfileDir)) {
+      throw new Error('run: profile-snapshot requires harnessProfileDir to exist')
+    }
   }
 }
 
