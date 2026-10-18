@@ -8,7 +8,7 @@
 
 ## 环境要求
 
-- DSH `0.2.x`
+- DSH `0.2.x`（已在 `0.2.1-rc.2` 验证）
 - Node.js `>= 22.19`
 - DSH profile 里已经配置好要评测的模型 provider
 - 本地有 benchmark 检出，以及描述它的 manifest；它的环境需求会在运行前检查
@@ -19,6 +19,7 @@
 git clone <repository-url>
 cd dsh-eval-harness
 npm --prefix dsh-eval-harness install
+npm --prefix dsh-eval-harness/dashboard install
 npm --prefix dsh-eval-harness run build
 dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 ```
