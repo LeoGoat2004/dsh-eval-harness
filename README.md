@@ -9,7 +9,7 @@ Harness, benchmark, or environment.
 
 ## Requirements
 
-- DSH `0.2.x` (verified with `0.2.1-rc.2`)
+- The latest DSH version
 - Node.js `>= 22.19`
 - A DSH profile with the model provider you want to evaluate already configured
 - A local benchmark checkout plus a manifest describing it; its environment requirements are

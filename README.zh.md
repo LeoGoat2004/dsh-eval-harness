@@ -8,7 +8,7 @@
 
 ## 环境要求
 
-- DSH `0.2.x`（已在 `0.2.1-rc.2` 验证）
+- 最新版本的 DSH
 - Node.js `>= 22.19`
 - DSH profile 里已经配置好要评测的模型 provider
 - 本地有 benchmark 检出，以及描述它的 manifest；它的环境需求会在运行前检查
