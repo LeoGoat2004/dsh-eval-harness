@@ -15,7 +15,7 @@ export interface ContainerCheck {
   readonly detail: string
 }
 
-/** Outcome of one container episode (agent + grading inside one container). */
+/** Outcome of one container episode (two separate containers: agent, verifier). */
 export interface ContainerEpisodeResult {
   readonly exitCode: number | null
   readonly timedOut: boolean
@@ -23,14 +23,15 @@ export interface ContainerEpisodeResult {
   readonly log: string
   readonly agentExit: number | null
   readonly verifyExit: number | null
-  /** Set when the loop guard stopped the container before the timeout. */
+  /** Set when the loop guard stopped the agent container before the timeout. */
   readonly guard: LoopGuardTrip | null
   readonly verify: VerifyResult
 }
 
 /** Standard container paths the executor always provides. */
 export const CONTAINER_PATHS = {
-  runScript: '/dsh-run.sh',
+  agentScript: '/dsh-agent.sh',
+  verifyScript: '/dsh-verify.sh',
   promptFile: '/dsh-prompt.txt',
   verifyDir: '/dsh-verify',
   junitPath: '/dsh-verify/junit.xml',
@@ -124,11 +125,13 @@ export function containerVars(
 }
 
 /**
- * Run one episode inside a container: agent command first, grading command
- * second, both in the same container so filesystem changes persist.
+ * Run one episode as two containers: the agent container holds the workspace and
+ * the model credential, then a verifier container receives only an artifact
+ * snapshot and the read-only benchmark mounts. The verifier never sees the
+ * prompt, trace, DSH home or model credential.
  *
- * The container is watched while it runs: the durable trace is mounted on the
- * host, so the same loop guard used for host episodes also stops runaway
+ * The agent container is watched while it runs: the durable trace is mounted on
+ * the host, so the same loop guard used for host episodes also stops runaway
  * container episodes at the same budget.
  * @param options - manifest, task, host directories, timeout, guard limits.
  * @returns process outcome, marker exits, guard trip and parsed checks.
@@ -163,158 +166,251 @@ export async function runContainerEpisode(options: {
     ...(options.dshHome === undefined ? {} : { dshHome: options.dshHome }),
     ...(options.profileName === undefined ? {} : { profileName: options.profileName }),
   })
+  const render = (value: string): string => renderContainerValue(value, vars, runEnv)
   const tracePath = container.tracePath ?? '/trace'
-  const renderCommand = (command: readonly string[]): string =>
-    command.map((token) => shellQuote(renderContainerValue(token, vars, runEnv))).join(' ')
-  const runScript = join(options.verifyDir, 'run.sh')
-  writeFileSync(
-    runScript,
-    [
-      '#!/bin/bash',
-      'set +e',
-      renderCommand(container.agentCommand),
-      'echo AGENT_EXIT=$?',
-      renderCommand(container.verifyCommand),
-      'echo VERIFY_EXIT=$?',
-      '',
-    ].join('\n'),
-  )
-  const mounts: string[] = [
-    '-v', options.traceDir + ':' + tracePath,
-    '-v', options.verifyDir + ':' + CONTAINER_PATHS.verifyDir,
-    '-v', options.promptFile + ':' + CONTAINER_PATHS.promptFile + ':ro',
-    '-v', runScript + ':' + CONTAINER_PATHS.runScript + ':ro',
-  ]
-  if (container.mountWorkspace !== false) {
-    mounts.push('-v', options.workspaceDir + ':' + container.workspace)
+  const image = render(container.image)
+  const baseName = options.containerName ?? 'dsh-eval-' + randomUUID()
+  const agentName = baseName + '-agent'
+  const verifierName = baseName + '-verify'
+  const started = Date.now()
+
+  const renderCommand = (command: readonly string[]): string => command.map((token) => shellQuote(render(token))).join(' ')
+  const agentScript = join(options.verifyDir, 'agent.sh')
+  writeFileSync(agentScript, ['#!/bin/bash', 'set +e', renderCommand(container.agentCommand), 'echo AGENT_EXIT=$?', ''].join('\n'))
+  const benchmarkMounts: string[] = []
+  for (const mount of container.mounts ?? []) {
+    benchmarkMounts.push('-v', render(mount.source) + ':' + render(mount.target) + (mount.readOnly === true ? ':ro' : ''))
   }
+  const agentMounts: string[] = [
+    '-v', options.traceDir + ':' + tracePath,
+    '-v', options.promptFile + ':' + CONTAINER_PATHS.promptFile + ':ro',
+    '-v', agentScript + ':' + CONTAINER_PATHS.agentScript + ':ro',
+    ...benchmarkMounts,
+  ]
+  if (container.mountWorkspace !== false) agentMounts.push('-v', options.workspaceDir + ':' + container.workspace)
   if (container.mountDshHome === true) {
     if (options.dshHome === undefined) throw new Error('container execution: mountDshHome requires a dshHome')
-    mounts.push('-v', options.dshHome + ':/dsh-home')
+    agentMounts.push('-v', options.dshHome + ':/dsh-home')
   }
-  for (const mount of container.mounts ?? []) {
-    const source = renderContainerValue(mount.source, vars, runEnv)
-    const target = renderContainerValue(mount.target, vars, runEnv)
-    mounts.push('-v', source + ':' + target + (mount.readOnly === true ? ':ro' : ''))
-  }
-  const envArgs: string[] = []
+  const agentEnv: string[] = []
   for (const entry of container.env ?? []) {
-    envArgs.push('-e', renderContainerValue(entry.name, vars, runEnv) + '=' + renderContainerValue(entry.value, vars, runEnv))
+    agentEnv.push('-e', render(entry.name) + '=' + render(entry.value))
   }
-  const started = Date.now()
-  const containerName = options.containerName ?? 'dsh-eval-' + randomUUID()
-  const child = spawn(
-    'docker',
-    [
-      'run', '--rm',
-      '--name', containerName,
-      ...mounts,
-      ...envArgs,
+
+  const agent = await runDockerPhase({
+    args: [
+      'run',
+      '--name', agentName,
+      ...agentMounts,
+      ...agentEnv,
       '-w', container.workspace,
-      renderContainerValue(container.image, vars, runEnv),
-      'bash', CONTAINER_PATHS.runScript,
+      image,
+      'bash', CONTAINER_PATHS.agentScript,
     ],
-    { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+    timeoutMs: options.timeoutMs,
+    traceDir: options.traceDir,
+    guard: options.guard,
+    containerName: agentName,
+  })
+  const agentLog = agent.log
+  const agentExit = marker(agentLog, 'AGENT_EXIT') ?? agent.exitCode
+  const agentOk = agent.exitCode === 0 && !agent.timedOut && agent.guard === null
+
+  let artifactError: string | undefined
+  const artifactMounts: string[] = []
+  if (agentOk) {
+    // Snapshot the artifact directories so the verifier cannot touch the
+    // agent's container and the agent cannot reach the grader.
+    if (container.mountWorkspace !== false) {
+      artifactMounts.push('-v', options.workspaceDir + ':' + container.workspace + ':ro')
+    } else {
+      const artifacts = container.artifacts ?? []
+      if (artifacts.length === 0) {
+        artifactError = 'container execution: manifest declares no artifacts for an image-content benchmark'
+      }
+      artifacts.forEach((artifactPath, index) => {
+        if (artifactError !== undefined) return
+        const hostDir = join(options.taskDir, 'artifacts', String(index))
+        mkdirSync(hostDir, { recursive: true })
+        const copy = spawnSync('docker', ['cp', agentName + ':' + artifactPath + '/.', hostDir], {
+          encoding: 'utf8',
+          timeout: 120_000,
+          windowsHide: true,
+        })
+        if (copy.status !== 0) {
+          artifactError = 'container execution: artifact snapshot failed for ' + artifactPath + ': ' + lastLine(copy.stderr)
+          return
+        }
+        artifactMounts.push('-v', hostDir + ':' + artifactPath + ':ro')
+      })
+    }
+  }
+  // The agent container is disposable once the snapshot exists.
+  spawnSync('docker', ['rm', '-f', agentName], { stdio: 'ignore', windowsHide: true })
+
+  if (!agentOk) {
+    const log = agentLog
+    writeFileSync(options.logPath, log)
+    return {
+      exitCode: agent.exitCode,
+      timedOut: agent.timedOut,
+      durationMs: Date.now() - started,
+      log,
+      agentExit,
+      verifyExit: null,
+      guard: agent.guard,
+      verify: {
+        ok: false,
+        passed: 0,
+        total: 0,
+        checks: [],
+        logPath: options.verifyDir,
+        error: 'verifier: skipped because the agent episode did not complete',
+      },
+    }
+  }
+  if (artifactError !== undefined) {
+    const log = agentLog
+    writeFileSync(options.logPath, log)
+    return {
+      exitCode: agent.exitCode,
+      timedOut: false,
+      durationMs: Date.now() - started,
+      log,
+      agentExit,
+      verifyExit: null,
+      guard: null,
+      verify: { ok: false, passed: 0, total: 0, checks: [], logPath: options.verifyDir, error: artifactError },
+    }
+  }
+
+  const verifyScript = join(options.verifyDir, 'verify.sh')
+  writeFileSync(
+    verifyScript,
+    ['#!/bin/bash', 'set +e', renderCommand(container.verifyCommand), 'echo VERIFY_EXIT=$?', ''].join('\n'),
   )
+  const verifyEnv: string[] = []
+  for (const entry of container.verifyEnv ?? []) {
+    verifyEnv.push('-e', render(entry.name) + '=' + render(entry.value))
+  }
+  const verifier = await runDockerPhase({
+    args: [
+      'run',
+      '--name', verifierName,
+      ...artifactMounts,
+      ...benchmarkMounts,
+      ...verifyEnv,
+      '-v', options.verifyDir + ':' + CONTAINER_PATHS.verifyDir,
+      '-v', verifyScript + ':' + CONTAINER_PATHS.verifyScript + ':ro',
+      '-w', container.workspace,
+      image,
+      'bash', CONTAINER_PATHS.verifyScript,
+    ],
+    timeoutMs: Math.min(options.timeoutMs, 120_000),
+    containerName: verifierName,
+  })
+  spawnSync('docker', ['rm', '-f', verifierName], { stdio: 'ignore', windowsHide: true })
+  const verifyExit = verifier.timedOut ? null : marker(verifier.log, 'VERIFY_EXIT') ?? verifier.exitCode
+  const log = agentLog + verifier.log
+  writeFileSync(options.logPath, log)
+  return {
+    exitCode: agent.exitCode,
+    timedOut: false,
+    durationMs: Date.now() - started,
+    log,
+    agentExit,
+    verifyExit,
+    guard: null,
+    verify:
+      verifier.timedOut
+        ? { ok: false, passed: 0, total: 0, checks: [], logPath: options.verifyDir, error: 'verifier: timed out' }
+        : readVerifier(options.verifyDir, container.verifyResult ?? 'junitxml', verifyExit, verifier.log),
+  }
+}
+
+/** Run one docker phase, optionally polling the trace with the loop guard. */
+async function runDockerPhase(options: {
+  readonly args: readonly string[]
+  readonly timeoutMs: number
+  readonly traceDir?: string
+  readonly guard?: LoopGuardLimits
+  readonly containerName: string
+}): Promise<{ exitCode: number | null; timedOut: boolean; guard: LoopGuardTrip | null; log: string }> {
+  const child = spawn('docker', [...options.args], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
   const out: string[] = []
   const err: string[] = []
   child.stdout?.on('data', (chunk: Buffer) => out.push(chunk.toString('utf8')))
   child.stderr?.on('data', (chunk: Buffer) => err.push(chunk.toString('utf8')))
-  const killContainer = (): void => {
-    spawn('docker', ['kill', containerName], { stdio: 'ignore', windowsHide: true })
-    spawn('docker', ['rm', '-f', containerName], { stdio: 'ignore', windowsHide: true })
+  const kill = (): void => {
+    spawn('docker', ['kill', options.containerName], { stdio: 'ignore', windowsHide: true })
+    spawn('docker', ['rm', '-f', options.containerName], { stdio: 'ignore', windowsHide: true })
   }
-  return new Promise<ContainerEpisodeResult>((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     let settled = false
-    const guard = createLoopGuard(options.guard)
+    const guard = options.guard === undefined ? null : createLoopGuard(options.guard)
     let processedLines = 0
-    const finish = (result: Omit<ContainerEpisodeResult, 'log' | 'verify'>): void => {
+    const finish = (result: { exitCode: number | null; timedOut: boolean; guard: LoopGuardTrip | null }): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      clearInterval(poller)
-      const log = out.join('') + err.join('')
-      writeFileSync(options.logPath, log)
-      resolve({
-        ...result,
-        log,
-        verify: readVerifier(options.verifyDir, container.verifyResult ?? 'junitxml', result.verifyExit, log),
-      })
+      if (poller !== undefined) clearInterval(poller)
+      resolve({ ...result, log: out.join('') + err.join('') })
     }
     const timer = setTimeout(() => {
-      killContainer()
-      finish({
-        exitCode: null,
-        timedOut: true,
-        durationMs: Date.now() - started,
-        agentExit: null,
-        verifyExit: null,
-        guard: null,
-      })
+      kill()
+      finish({ exitCode: null, timedOut: true, guard: null })
     }, options.timeoutMs)
-    const poller = setInterval(() => {
-      if (settled) return
-      const log = findSessionLog(options.traceDir)
-      if (log === null) return
-      let text: string
-      try {
-        text = readFileSync(log, 'utf8')
-      } catch {
-        return
-      }
-      const lines = text.split(/\r?\n/u)
-      while (processedLines < lines.length) {
-        const line = lines[processedLines]
-        if (line === undefined) return
-        if (line.trim() === '') {
-          processedLines += 1
-          continue
-        }
-        let parsed: unknown
+    let poller: NodeJS.Timeout | undefined
+    if (guard !== null && options.traceDir !== undefined) {
+      poller = setInterval(() => {
+        if (settled) return
+        const logPath = findSessionLog(options.traceDir as string)
+        if (logPath === null) return
+        let text: string
         try {
-          parsed = JSON.parse(line)
+          text = readFileSync(logPath, 'utf8')
         } catch {
           return
         }
-        processedLines += 1
-        const trip = guard.observe(
-          parsed as {
-            readonly type?: string
-            readonly step?: number
-            readonly data?: { readonly name?: string; readonly arguments?: string }
-          },
-        )
-        if (trip !== null) {
-          killContainer()
-          finish({
-            exitCode: null,
-            timedOut: false,
-            durationMs: Date.now() - started,
-            agentExit: null,
-            verifyExit: null,
-            guard: trip,
-          })
-          return
+        const lines = text.split(/\r?\n/u)
+        while (processedLines < lines.length) {
+          const line = lines[processedLines]
+          if (line === undefined) return
+          if (line.trim() === '') {
+            processedLines += 1
+            continue
+          }
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(line)
+          } catch {
+            return
+          }
+          processedLines += 1
+          const trip = guard.observe(
+            parsed as {
+              readonly type?: string
+              readonly step?: number
+              readonly data?: { readonly name?: string; readonly arguments?: string }
+            },
+          )
+          if (trip !== null) {
+            kill()
+            finish({ exitCode: null, timedOut: false, guard: trip })
+            return
+          }
         }
-      }
-    }, 2000)
+      }, 2000)
+    }
     child.once('error', (error) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      clearInterval(poller)
+      if (poller !== undefined) clearInterval(poller)
       reject(error)
     })
     child.once('close', (code) => {
-      const log = out.join('') + err.join('')
-      finish({
-        exitCode: code,
-        timedOut: false,
-        durationMs: Date.now() - started,
-        agentExit: marker(log, 'AGENT_EXIT'),
-        verifyExit: marker(log, 'VERIFY_EXIT'),
-        guard: null,
-      })
+      finish({ exitCode: code, timedOut: false, guard: null })
     })
   })
 }
@@ -326,13 +422,7 @@ function readVerifier(
   log: string,
 ): VerifyResult {
   if (format === 'exit-code') {
-    return {
-      ok: verifyExit === 0,
-      passed: 0,
-      total: 0,
-      checks: [],
-      logPath: verifyDir,
-    }
+    return { ok: verifyExit === 0, passed: 0, total: 0, checks: [], logPath: verifyDir }
   }
   if (format === 'pytest-text') {
     const passed = Number(/(\d+) passed/u.exec(log)?.[1] ?? '0')
@@ -355,8 +445,6 @@ function readVerifier(
     const checks = parseJunit(readFileSync(junitPath, 'utf8'))
     const passed = checks.filter((check) => check.pass).length
     const skipped = checks.filter((check) => check.skipped).length
-    // The grading process must also have exited cleanly; a skipped test never
-    // counts as a pass.
     return {
       ok: verifyExit === 0 && checks.length > 0 && passed === checks.length,
       passed,

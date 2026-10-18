@@ -294,7 +294,7 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
     const episodeDir = join(workDir, 'container-episode')
     mkdirSync(episodeDir, { recursive: true })
     writeFileSync(join(episodeDir, 'prompt.md'), 'write out.py')
-    const result = runContainerEpisode({
+    const result = await runContainerEpisode({
       manifest: loadedFixture.manifest,
       task: fixtureTask,
       taskDir: join(episodeDir, 'task-artifacts'),
@@ -304,6 +304,7 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
       verifyDir: join(episodeDir, 'verify'),
       promptFile: episodeDir + '/prompt.md',
       timeoutMs: 120_000,
+      guard: { maxSteps: 50, maxIdenticalToolCalls: 3 },
       logPath: join(episodeDir, 'container.log'),
     })
     check(result.verify.ok === true, 'container executor must grade a successful container episode: ' + JSON.stringify(result.verify.error ?? ''))

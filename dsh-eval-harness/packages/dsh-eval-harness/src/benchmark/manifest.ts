@@ -72,14 +72,21 @@ export interface BenchmarkManifest {
       readonly mountWorkspace?: boolean
       /** Mount the run's private DSH_HOME at `/dsh-home` (default false). */
       readonly mountDshHome?: boolean
+      /**
+       * Container directories snapshotted after the agent and mounted read-only
+       * into the verifier container (required when workspace is not mounted).
+       */
+      readonly artifacts?: readonly string[]
       /** Extra mounts (templated). `source` is a host path. */
       readonly mounts?: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[]
       /** Container environment (templated; `{{env:NAME}}` reads the host env). */
       readonly env?: readonly { readonly name: string; readonly value: string }[]
       /** Agent command inside the container (templated). */
       readonly agentCommand: readonly string[]
-      /** Grading command inside the same container (templated). */
+      /** Grading command inside the verifier container (templated). */
       readonly verifyCommand: readonly string[]
+      /** Environment for the verifier container only; the agent credential never reaches it. */
+      readonly verifyEnv?: readonly { readonly name: string; readonly value: string }[]
       /** How to read grading output: junitxml (default), pytest text, or exit code only. */
       readonly verifyResult?: 'junitxml' | 'pytest-text' | 'exit-code'
     }
@@ -263,15 +270,12 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
           ...(mount.readOnly === true ? { readOnly: true } : {}),
         }
       })
-  const env = container.env === undefined
-    ? undefined
-    : requireArray(container.env, 'execution.container.env').map((item, index) => {
-        const entry = requireObject(item, 'execution.container.env[' + String(index) + ']')
-        return {
-          name: requireString(entry.name, 'execution.container.env[' + String(index) + '].name'),
-          value: requireString(entry.value, 'execution.container.env[' + String(index) + '].value'),
-        }
-      })
+  const env = parseEnvironment(container.env, 'execution.container.env')
+  const verifyEnv = parseEnvironment(container.verifyEnv, 'execution.container.verifyEnv')
+  const artifacts =
+    container.artifacts === undefined
+      ? undefined
+      : requireOptionalStringArray(container.artifacts, 'execution.container.artifacts')
   return {
     kind: 'container',
     container: {
@@ -286,8 +290,10 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
       ...(container.mountDshHome === undefined
         ? {}
         : { mountDshHome: container.mountDshHome === true }),
+      ...(artifacts === undefined ? {} : { artifacts }),
       ...(mounts === undefined ? {} : { mounts }),
       ...(env === undefined ? {} : { env }),
+      ...(verifyEnv === undefined ? {} : { verifyEnv }),
       agentCommand: requireStringArray(container.agentCommand, 'execution.container.agentCommand'),
       verifyCommand: requireStringArray(container.verifyCommand, 'execution.container.verifyCommand'),
       ...(container.verifyResult === undefined
@@ -295,6 +301,21 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
         : { verifyResult: requireVerifyResult(container.verifyResult) }),
     },
   }
+}
+
+/** Parse an optional list of `{name, value}` environment entries. */
+function parseEnvironment(
+  value: unknown,
+  field: string,
+): readonly { readonly name: string; readonly value: string }[] | undefined {
+  if (value === undefined) return undefined
+  return requireArray(value, field).map((item, index) => {
+    const entry = requireObject(item, field + '[' + String(index) + ']')
+    return {
+      name: requireString(entry.name, field + '[' + String(index) + '].name'),
+      value: requireString(entry.value, field + '[' + String(index) + '].value'),
+    }
+  })
 }
 
 const VERIFY_RESULTS = new Set<string>(['junitxml', 'pytest-text', 'exit-code'])
