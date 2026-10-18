@@ -7,22 +7,46 @@ import type { BenchmarkTask } from '../benchmark/interpreter.ts'
 import type { ModelTarget } from '../model/target.ts'
 import { createLoopGuard, type LoopGuardLimits, type LoopGuardTrip } from './guard.ts'
 
-/** How the harness under test is chosen. */
-export type HarnessMode = 'profile-snapshot' | 'minimal-control'
+/** How the harness under test is chosen. `profile-snapshot` is the legacy alias of isolated. */
+export type HarnessMode = 'faithful-snapshot' | 'isolated-snapshot' | 'profile-snapshot' | 'minimal-control'
+
+/** Canonical snapshot mode stored in artifacts (legacy alias normalized). */
+export type CanonicalHarnessMode = 'faithful-snapshot' | 'isolated-snapshot' | 'minimal-control'
+
+/** Every mutation the isolated snapshot applies to the confirmed profile. */
+export interface MutationDiff {
+  /** Rows appended by the plugin that the source profile did not declare. */
+  readonly addedRows: readonly string[]
+  /** Source rows whose id the plugin re-declares (last declaration wins). */
+  readonly overriddenRows: readonly string[]
+  /** Appended rows that disable a source row. */
+  readonly disabledRows: readonly string[]
+  /** Whether the snapshot applies isolation (false = faithful). */
+  readonly hermetic: boolean
+}
 
 /** Frozen description of the harness under test, recorded with every run. */
 export interface HarnessSnapshot {
-  readonly mode: HarnessMode
-  /** Source profile copied in `profile-snapshot` mode; null for `minimal-control`. */
+  readonly mode: CanonicalHarnessMode
+  /** Source profile copied in snapshot modes; null for `minimal-control`. */
   readonly sourceProfileDir: string | null
   readonly bundles: readonly string[]
   /** Whether the snapshot reuses the source profile's installed modules. */
   readonly nodeModulesLinked: boolean
   /** Rows the snapshot refuses to copy (reserved for future bundle filtering). */
   readonly excludedRows: readonly string[]
-  /** SHA-256 over the frozen profile files and bundles. */
+  /** Exact mutation diff applied to the source profile. */
+  readonly mutationDiff: MutationDiff
+  /** Installed bundle versions observed in the source profile, when available. */
+  readonly resolvedBundles: Readonly<Record<string, string | null>>
+  /** SHA-256 over the frozen profile files, patch rows and resolved bundle versions. */
   readonly digest: string
-  readonly files: Readonly<Record<string, string>>
+  readonly files: Readonly<Record<string, string | null>>
+}
+
+/** Canonicalize the public mode; `profile-snapshot` keeps working as isolated. */
+export function canonicalHarnessMode(mode: HarnessMode): CanonicalHarnessMode {
+  return mode === 'profile-snapshot' ? 'isolated-snapshot' : mode
 }
 
 /** Absolute paths of the private Harness home materialized for one run. */
@@ -127,8 +151,9 @@ export function materializeProfile(
 ): EvalProfilePaths {
   const profileDir = join(dshHome, 'profiles', profileName)
   mkdirSync(profileDir, { recursive: true })
-  if (options.mode === 'profile-snapshot') {
-    return materializeSnapshot(profileDir, profileName, dshHome, target, options.sourceProfileDir)
+  const mode = canonicalHarnessMode(options.mode)
+  if (mode !== 'minimal-control') {
+    return materializeSnapshot(profileDir, profileName, dshHome, target, options.sourceProfileDir, mode)
   }
   writeJson(join(profileDir, 'package.json'), {
     name: 'dsh-profile-' + profileName,
@@ -143,45 +168,58 @@ export function materializeProfile(
     bundles: [...EVAL_BUNDLES],
     nodeModulesLinked: false,
     excludedRows: [],
+    mutationDiff: { addedRows: [], overriddenRows: [], disabledRows: [], hermetic: true },
+    resolvedBundles: {},
     digest: digestOf({ mode: 'minimal-control', bundles: EVAL_BUNDLES, rows: evalRows(target) }),
     files: {},
   }
   return { dshHome, profileDir, profileName, snapshot }
 }
 
-/** Copy a user profile into the private home and append isolation/model rows. */
+/** Copy a user profile into the private home; isolated mode appends isolation/model rows. */
 function materializeSnapshot(
   profileDir: string,
   profileName: string,
   dshHome: string,
   target: ModelTarget,
   sourceProfileDir: string | undefined,
+  mode: 'faithful-snapshot' | 'isolated-snapshot',
 ): EvalProfilePaths {
   if (sourceProfileDir === undefined || !existsSync(sourceProfileDir)) {
-    throw new Error('profile-snapshot mode requires an existing source profile directory')
+    throw new Error(mode + ' requires an existing source profile directory')
   }
   const sourcePackagePath = join(sourceProfileDir, 'package.json')
   if (!existsSync(sourcePackagePath)) {
-    throw new Error('profile-snapshot: source profile has no package.json: ' + sourceProfileDir)
+    throw new Error(mode + ': source profile has no package.json: ' + sourceProfileDir)
   }
   const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, 'utf8')) as Record<string, unknown>
   const bundles = readBundles(sourcePackage)
   if (bundles.length === 0) {
-    throw new Error('profile-snapshot: source profile declares no dsh.profile.bundles')
+    throw new Error(mode + ': source profile declares no dsh.profile.bundles')
   }
   const sourceCordis = readIfExists(join(sourceProfileDir, 'cordis.yml')) ?? '[]\n'
   const sourcePatch = readIfExists(join(sourceProfileDir, 'cordis.patch.yml')) ?? ''
   const baseRows = sourcePatch.trim() === '' ? [] : parseYaml(sourcePatch)
   if (!Array.isArray(baseRows)) {
-    throw new Error('profile-snapshot: source cordis.patch.yml must contain a YAML sequence')
+    throw new Error(mode + ': source cordis.patch.yml must contain a YAML sequence')
   }
-  const appendedRows = parseYaml(evalRows(target).join('\n'))
-  if (!Array.isArray(appendedRows)) {
-    throw new Error('profile-snapshot: internal eval rows did not parse as a sequence')
+  let patchText: string
+  let mutationDiff: MutationDiff
+  if (mode === 'faithful-snapshot') {
+    // Faithful: the confirmed profile is used exactly as-is; only the trace
+    // overlay is injected per task (outside the profile).
+    patchText = sourcePatch.trim() === '' ? '[]\n' : sourcePatch
+    mutationDiff = { addedRows: [], overriddenRows: [], disabledRows: [], hermetic: false }
+  } else {
+    const appendedRows = parseYaml(evalRows(target).join('\n'))
+    if (!Array.isArray(appendedRows)) {
+      throw new Error(mode + ': internal eval rows did not parse as a sequence')
+    }
+    // Merge by parsing both sides: appending raw text to an empty flow sequence
+    // (`[]`) would produce invalid YAML.
+    patchText = stringifyYaml([...baseRows, ...appendedRows])
+    mutationDiff = mutationDiffOf(baseRows, appendedRows)
   }
-  // Merge by parsing both sides: appending raw text to an empty flow sequence
-  // (`[]`) would produce invalid YAML.
-  const patchText = stringifyYaml([...baseRows, ...appendedRows])
   writeJson(join(profileDir, 'package.json'), {
     ...sourcePackage,
     name: 'dsh-profile-' + profileName,
@@ -201,20 +239,69 @@ function materializeSnapshot(
       nodeModulesLinked = false
     }
   }
+  const resolvedBundles = resolveBundleVersions(sourceProfileDir, bundles)
+  const files = profileFileHashes(sourceProfileDir)
   const snapshot: HarnessSnapshot = {
-    mode: 'profile-snapshot',
+    mode,
     sourceProfileDir,
     bundles,
     nodeModulesLinked,
     excludedRows: [],
-    digest: digestOf({ mode: 'profile-snapshot', bundles, cordis: sourceCordis, patch: patchText }),
-    files: {
-      'package.json': sha256(readFileSync(sourcePackagePath, 'utf8')),
-      'cordis.yml': sha256(sourceCordis),
-      'cordis.patch.yml': sha256(sourcePatch),
-    },
+    mutationDiff,
+    resolvedBundles,
+    digest: digestOf({ mode, bundles, cordis: sourceCordis, patch: patchText, resolvedBundles, mutationDiff, files }),
+    files,
   }
   return { dshHome, profileDir, profileName, snapshot }
+}
+
+/** Hash the profile configuration and lockfiles that define the experiment. */
+function profileFileHashes(profileDir: string): Record<string, string | null> {
+  const files: Record<string, string | null> = {}
+  for (const name of ['package.json', 'cordis.yml', 'cordis.patch.yml', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']) {
+    const path = join(profileDir, name)
+    files[name] = existsSync(path) ? sha256(readFileSync(path, 'utf8')) : null
+  }
+  return files
+}
+
+/** Read installed bundle versions from the source profile's node_modules, when present. */
+function resolveBundleVersions(sourceProfileDir: string, bundles: readonly string[]): Record<string, string | null> {
+  const resolved: Record<string, string | null> = {}
+  for (const bundle of bundles) {
+    try {
+      const pkg = JSON.parse(
+        readFileSync(join(sourceProfileDir, 'node_modules', bundle, 'package.json'), 'utf8'),
+      ) as { version?: unknown }
+      resolved[bundle] = typeof pkg.version === 'string' ? pkg.version : null
+    } catch {
+      resolved[bundle] = null
+    }
+  }
+  return resolved
+}
+
+/** Compute which rows the isolated snapshot appends, overrides and disables. */
+function mutationDiffOf(baseRows: readonly unknown[], appendedRows: readonly unknown[]): MutationDiff {
+  const baseIds = new Set(patchRowIds(baseRows))
+  const addedRows: string[] = []
+  const overriddenRows: string[] = []
+  const disabledRows: string[] = []
+  for (const row of appendedRows) {
+    if (!isObject(row) || typeof row.id !== 'string') continue
+    if (baseIds.has(row.id)) overriddenRows.push(row.id)
+    else addedRows.push(row.id)
+    if (row.disabled === true) disabledRows.push(row.id)
+  }
+  return { addedRows, overriddenRows, disabledRows, hermetic: true }
+}
+
+function patchRowIds(rows: readonly unknown[]): string[] {
+  const ids: string[] = []
+  for (const row of rows) {
+    if (isObject(row) && typeof row.id === 'string') ids.push(row.id)
+  }
+  return ids
 }
 
 /** Read `dsh.profile.bundles` from a profile package.json. */

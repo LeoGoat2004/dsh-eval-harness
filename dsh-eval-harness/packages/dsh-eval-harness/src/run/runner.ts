@@ -724,12 +724,17 @@ function validateSpec(spec: RunSpec): void {
   if (spec.permissionMode !== 'workspace-write' && spec.permissionMode !== 'danger-full-access') {
     throw new Error('run: permissionMode must be workspace-write or danger-full-access')
   }
-  if (spec.harnessMode !== 'profile-snapshot' && spec.harnessMode !== 'minimal-control') {
-    throw new Error('run: harnessMode must be profile-snapshot or minimal-control')
+  if (
+    spec.harnessMode !== 'faithful-snapshot' &&
+    spec.harnessMode !== 'isolated-snapshot' &&
+    spec.harnessMode !== 'profile-snapshot' &&
+    spec.harnessMode !== 'minimal-control'
+  ) {
+    throw new Error('run: harnessMode must be faithful-snapshot, isolated-snapshot or minimal-control')
   }
-  if (spec.harnessMode === 'profile-snapshot') {
+  if (spec.harnessMode !== 'minimal-control') {
     if (spec.harnessProfileDir === undefined || !existsSync(spec.harnessProfileDir)) {
-      throw new Error('run: profile-snapshot requires harnessProfileDir to exist')
+      throw new Error('run: snapshot harnessMode requires harnessProfileDir to exist')
     }
   }
   // A declared version must match the installed launcher; a mismatch means the

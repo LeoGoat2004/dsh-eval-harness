@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import type { HarnessMode } from './profile.ts'
 
 /** Confirmed evaluation identity that `eval_run` must re-validate. */
 export interface PlanInputs {
   readonly harnessProfileDir: string
-  readonly harnessMode: 'profile-snapshot' | 'minimal-control'
+  readonly harnessMode: HarnessMode
   readonly dshVersion: string
   readonly provider: string
   readonly model: string
@@ -63,19 +64,22 @@ const PROFILE_FILES = ['package.json', 'cordis.yml', 'cordis.patch.yml', 'packag
  */
 export function collectPlanContent(input: PlanInputs): PlanContent {
   const profileDir = resolve(input.harnessProfileDir)
+  // `profile-snapshot` is the legacy alias of `isolated-snapshot`; both must
+  // address the same experiment.
+  const mode = input.harnessMode === 'profile-snapshot' ? 'isolated-snapshot' : input.harnessMode
   const files: Record<string, string | null> = {}
   for (const name of PROFILE_FILES) {
     const path = join(profileDir, name)
     files[name] = existsSync(path) ? sha256(readFileSync(path, 'utf8')) : null
   }
-  const harnessDigest = sha256(JSON.stringify({ mode: input.harnessMode, dshVersion: input.dshVersion, files }))
+  const harnessDigest = sha256(JSON.stringify({ mode, dshVersion: input.dshVersion, files }))
   const manifestSha256 = sha256(readFileSync(resolve(input.manifestPath), 'utf8'))
   const git = readGitState(resolve(input.benchmarkRoot))
   return {
     schema: 2,
     harness: {
       profileDir,
-      mode: input.harnessMode,
+      mode,
       dshVersion: input.dshVersion,
       files,
       digest: harnessDigest,

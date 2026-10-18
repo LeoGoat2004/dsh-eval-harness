@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadManifest, manifestRequirements } from '../benchmark/manifest.ts'
 import { digestPlan } from '../run/plan.ts'
+import type { HarnessMode } from '../run/profile.ts'
 import { credentialPresent } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
 import { auditHarnessProfile } from '../run/environment-audit.ts'
@@ -226,8 +227,13 @@ export function createEvalPreflightTool(): ToolDefinition {
       }
       const profileDir = resolveProfileDir(input.harnessProfile)
       const target = resolveModelTarget(profileDir, input.provider, input.model)
-      if (input.harnessMode !== 'profile-snapshot' && input.harnessMode !== 'minimal-control') {
-        throw new Error('eval_preflight: harnessMode must be profile-snapshot or minimal-control')
+      if (
+        input.harnessMode !== 'faithful-snapshot' &&
+        input.harnessMode !== 'isolated-snapshot' &&
+        input.harnessMode !== 'profile-snapshot' &&
+        input.harnessMode !== 'minimal-control'
+      ) {
+        throw new Error('eval_preflight: harnessMode must be faithful-snapshot, isolated-snapshot or minimal-control')
       }
       if (!existsSync(input.benchmarkRoot)) {
         throw new Error('eval_preflight: benchmark root not found: ' + input.benchmarkRoot)
@@ -268,7 +274,7 @@ export function createEvalPreflightTool(): ToolDefinition {
         // eval_run must present this digest; it recomputes it from its own inputs.
         planDigest: digestPlan({
           harnessProfileDir: profileDir,
-          harnessMode: input.harnessMode as 'profile-snapshot' | 'minimal-control',
+          harnessMode: input.harnessMode as HarnessMode,
           dshVersion: input.dshVersion,
           provider: target.provider,
           model: target.model,

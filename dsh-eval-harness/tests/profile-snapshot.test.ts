@@ -16,7 +16,7 @@ const target = (): ModelTarget => ({
 })
 
 /** Create a minimal source profile with one extra patch row. */
-function sourceProfile(root: string, value: string): string {
+function sourceProfile(root: string, value: string, bundleVersion?: string): string {
   const dir = join(root, 'profiles', 'fixture')
   mkdirSync(dir, { recursive: true })
   writeFileSync(
@@ -25,19 +25,29 @@ function sourceProfile(root: string, value: string): string {
   )
   writeFileSync(join(dir, 'cordis.yml'), '[]\n')
   writeFileSync(join(dir, 'cordis.patch.yml'), "- id: custom\n  name: '@example/custom'\n  config:\n    value: " + value + '\n')
+  if (bundleVersion !== undefined) {
+    for (const bundle of ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless']) {
+      const pkgDir = join(dir, 'node_modules', bundle)
+      mkdirSync(pkgDir, { recursive: true })
+      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: bundle, version: bundleVersion }))
+    }
+  }
   return dir
 }
 
 describe('materializeProfile', () => {
-  it('copies the confirmed profile and appends isolation/model rows', () => {
+  it('isolated-snapshot copies the profile, applies rows and records the mutation diff', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
     const source = sourceProfile(root, '1')
     const materialized = materializeProfile(join(root, 'home'), 'eval', target(), {
-      mode: 'profile-snapshot',
+      mode: 'isolated-snapshot',
       sourceProfileDir: source,
     })
-    expect(materialized.snapshot.mode).toBe('profile-snapshot')
+    expect(materialized.snapshot.mode).toBe('isolated-snapshot')
     expect(materialized.snapshot.sourceProfileDir).toBe(source)
+    expect(materialized.snapshot.mutationDiff.hermetic).toBe(true)
+    expect(materialized.snapshot.mutationDiff.addedRows).toContain('agent-default-model')
+    expect(materialized.snapshot.mutationDiff.disabledRows).toContain('credentials')
     const profilePackage = JSON.parse(readFileSync(join(materialized.profileDir, 'package.json'), 'utf8')) as {
       dsh: { profile: { bundles: string[] } }
     }
@@ -49,16 +59,48 @@ describe('materializeProfile', () => {
     expect(materialized.snapshot.digest).toMatch(/^[0-9a-f]{64}$/)
   })
 
-  it('changes the snapshot digest when the source profile changes', () => {
+  it('faithful-snapshot keeps the confirmed profile unchanged and is not hermetic', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
+    const source = sourceProfile(root, '1')
+    const faithful = materializeProfile(join(root, 'home-f'), 'eval', target(), {
+      mode: 'faithful-snapshot',
+      sourceProfileDir: source,
+    })
+    expect(faithful.snapshot.mode).toBe('faithful-snapshot')
+    expect(faithful.snapshot.mutationDiff.hermetic).toBe(false)
+    expect(faithful.snapshot.mutationDiff.addedRows).toEqual([])
+    const patch = readFileSync(join(faithful.profileDir, 'cordis.patch.yml'), 'utf8')
+    expect(patch).toContain('@example/custom')
+    expect(patch).not.toContain('agent-default-model')
+    expect(patch).not.toContain('maxBytes: 0')
+    const isolated = materializeProfile(join(root, 'home-i'), 'eval', target(), {
+      mode: 'isolated-snapshot',
+      sourceProfileDir: source,
+    })
+    expect(faithful.snapshot.digest).not.toBe(isolated.snapshot.digest)
+  })
+
+  it('normalizes the legacy profile-snapshot alias', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
+    const materialized = materializeProfile(join(root, 'home'), 'eval', target(), {
+      mode: 'profile-snapshot',
+      sourceProfileDir: sourceProfile(root, '1'),
+    })
+    expect(materialized.snapshot.mode).toBe('isolated-snapshot')
+  })
+
+  it('records resolved bundle versions and includes them in the digest', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
     const first = materializeProfile(join(root, 'home-a'), 'eval', target(), {
-      mode: 'profile-snapshot',
-      sourceProfileDir: sourceProfile(join(root, 'a'), '1'),
+      mode: 'isolated-snapshot',
+      sourceProfileDir: sourceProfile(join(root, 'a'), '1', '0.2.1-rc.2'),
     })
     const second = materializeProfile(join(root, 'home-b'), 'eval', target(), {
-      mode: 'profile-snapshot',
-      sourceProfileDir: sourceProfile(join(root, 'b'), '2'),
+      mode: 'isolated-snapshot',
+      sourceProfileDir: sourceProfile(join(root, 'b'), '1', '0.2.0-rc.2'),
     })
+    expect(first.snapshot.resolvedBundles['@deepseek-ai/dsh-base']).toBe('0.2.1-rc.2')
+    expect(second.snapshot.resolvedBundles['@deepseek-ai/dsh-base']).toBe('0.2.0-rc.2')
     expect(first.snapshot.digest).not.toBe(second.snapshot.digest)
   })
 

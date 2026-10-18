@@ -36,8 +36,8 @@ if (permissionMode !== 'workspace-write' && permissionMode !== 'danger-full-acce
   process.exit(2)
 }
 const harnessMode = requireArg('harness-mode', args['harness-mode'])
-if (harnessMode !== 'profile-snapshot' && harnessMode !== 'minimal-control') {
-  console.error('run-eval: --harness-mode must be profile-snapshot or minimal-control')
+if (!['faithful-snapshot', 'isolated-snapshot', 'profile-snapshot', 'minimal-control'].includes(harnessMode)) {
+  console.error('run-eval: --harness-mode must be faithful-snapshot, isolated-snapshot or minimal-control')
   process.exit(2)
 }
 const outputDir = resolve(args.out ?? join(workspaceRoot, '..', 'runs'))

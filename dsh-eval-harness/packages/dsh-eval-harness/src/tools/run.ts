@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import type { Config } from '../config.ts'
 import { resolveCredential } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
+import type { HarnessMode } from '../run/profile.ts'
 import { generateDashboard } from '../report/dashboard.ts'
 import { digestPlan } from '../run/plan.ts'
 import { startRunJob } from '../run/jobs.ts'
@@ -60,7 +61,8 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       harnessMode: {
         type: 'string',
         required: true,
-        description: 'profile-snapshot（复制并运行用户确认的 profile）或 minimal-control（固定最小对照）',
+        description:
+          'faithful-snapshot（原样保留 profile，仅注入 trace）、isolated-snapshot（追加隔离/模型行并记录 mutation diff）、minimal-control（固定最小对照）；profile-snapshot 为 isolated 的旧别名',
       },
       planDigest: {
         type: 'string',
@@ -130,8 +132,9 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       if (input.permissionMode !== 'workspace-write' && input.permissionMode !== 'danger-full-access') {
         throw new Error('eval_run: permissionMode must be workspace-write or danger-full-access')
       }
-      if (input.harnessMode !== 'profile-snapshot' && input.harnessMode !== 'minimal-control') {
-        throw new Error('eval_run: harnessMode must be profile-snapshot or minimal-control')
+      const MODES = ['faithful-snapshot', 'isolated-snapshot', 'profile-snapshot', 'minimal-control']
+      if (!MODES.includes(input.harnessMode)) {
+        throw new Error('eval_run: harnessMode must be faithful-snapshot, isolated-snapshot or minimal-control')
       }
       const profileDir = resolveProfileDir(input.harnessProfile)
       const target = resolveModelTarget(profileDir, input.provider, input.model)
@@ -185,7 +188,7 @@ export function createEvalRunTool(config: Config): ToolDefinition {
           profileName: 'eval-run',
           timeoutMs: input.timeoutMs,
           permissionMode: input.permissionMode as 'workspace-write' | 'danger-full-access',
-          harnessMode: input.harnessMode as 'profile-snapshot' | 'minimal-control',
+          harnessMode: input.harnessMode as HarnessMode,
           harnessProfileDir: profileDir,
           env,
           model: target,
