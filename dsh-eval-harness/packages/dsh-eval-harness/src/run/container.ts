@@ -1,9 +1,12 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BenchmarkTask } from '../benchmark/interpreter.ts'
 import type { BenchmarkManifest } from '../benchmark/manifest.ts'
 import { renderTemplate } from '../benchmark/manifest.ts'
+import { createLoopGuard, type LoopGuardLimits, type LoopGuardTrip } from './guard.ts'
+import { findSessionLog } from './profile.ts'
 import { parseJunit, type VerifyResult } from './verify.ts'
 
 /** One environment observation for container execution. */
@@ -12,7 +15,7 @@ export interface ContainerCheck {
   readonly detail: string
 }
 
-/** Outcome of one container episode (agent + grading inside the same container). */
+/** Outcome of one container episode (agent + grading inside one container). */
 export interface ContainerEpisodeResult {
   readonly exitCode: number | null
   readonly timedOut: boolean
@@ -20,6 +23,8 @@ export interface ContainerEpisodeResult {
   readonly log: string
   readonly agentExit: number | null
   readonly verifyExit: number | null
+  /** Set when the loop guard stopped the container before the timeout. */
+  readonly guard: LoopGuardTrip | null
   readonly verify: VerifyResult
 }
 
@@ -121,10 +126,14 @@ export function containerVars(
 /**
  * Run one episode inside a container: agent command first, grading command
  * second, both in the same container so filesystem changes persist.
- * @param options - manifest, task, host directories, timeout.
- * @returns process outcome, marker exits and parsed verifier checks.
+ *
+ * The container is watched while it runs: the durable trace is mounted on the
+ * host, so the same loop guard used for host episodes also stops runaway
+ * container episodes at the same budget.
+ * @param options - manifest, task, host directories, timeout, guard limits.
+ * @returns process outcome, marker exits, guard trip and parsed checks.
  */
-export function runContainerEpisode(options: {
+export async function runContainerEpisode(options: {
   readonly manifest: BenchmarkManifest
   readonly task: BenchmarkTask
   readonly taskDir: string
@@ -137,8 +146,10 @@ export function runContainerEpisode(options: {
   readonly profileName?: string
   readonly runEnv?: NodeJS.ProcessEnv
   readonly timeoutMs: number
+  readonly guard: LoopGuardLimits
+  readonly containerName?: string
   readonly logPath: string
-}): ContainerEpisodeResult {
+}): Promise<ContainerEpisodeResult> {
   const container = options.manifest.execution?.container
   if (container === undefined) throw new Error('container execution: manifest has no execution.container block')
   const runEnv = options.runEnv ?? process.env
@@ -191,32 +202,121 @@ export function runContainerEpisode(options: {
     envArgs.push('-e', renderContainerValue(entry.name, vars, runEnv) + '=' + renderContainerValue(entry.value, vars, runEnv))
   }
   const started = Date.now()
-  const result = spawnSync(
+  const containerName = options.containerName ?? 'dsh-eval-' + randomUUID()
+  const child = spawn(
     'docker',
     [
       'run', '--rm',
+      '--name', containerName,
       ...mounts,
       ...envArgs,
       '-w', container.workspace,
       renderContainerValue(container.image, vars, runEnv),
       'bash', CONTAINER_PATHS.runScript,
     ],
-    { encoding: 'utf8', timeout: options.timeoutMs, windowsHide: true },
+    { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   )
-  const durationMs = Date.now() - started
-  const log = (result.stdout ?? '') + (result.stderr ?? '')
-  writeFileSync(options.logPath, log)
-  const agentExit = marker(log, 'AGENT_EXIT')
-  const verifyExit = marker(log, 'VERIFY_EXIT')
-  return {
-    exitCode: result.status,
-    timedOut: result.error !== undefined && String(result.error).includes('ETIMEDOUT'),
-    durationMs,
-    log,
-    agentExit,
-    verifyExit,
-    verify: readVerifier(options.verifyDir, container.verifyResult ?? 'junitxml', verifyExit, log),
+  const out: string[] = []
+  const err: string[] = []
+  child.stdout?.on('data', (chunk: Buffer) => out.push(chunk.toString('utf8')))
+  child.stderr?.on('data', (chunk: Buffer) => err.push(chunk.toString('utf8')))
+  const killContainer = (): void => {
+    spawn('docker', ['kill', containerName], { stdio: 'ignore', windowsHide: true })
+    spawn('docker', ['rm', '-f', containerName], { stdio: 'ignore', windowsHide: true })
   }
+  return new Promise<ContainerEpisodeResult>((resolve, reject) => {
+    let settled = false
+    const guard = createLoopGuard(options.guard)
+    let processedLines = 0
+    const finish = (result: Omit<ContainerEpisodeResult, 'log' | 'verify'>): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearInterval(poller)
+      const log = out.join('') + err.join('')
+      writeFileSync(options.logPath, log)
+      resolve({
+        ...result,
+        log,
+        verify: readVerifier(options.verifyDir, container.verifyResult ?? 'junitxml', result.verifyExit, log),
+      })
+    }
+    const timer = setTimeout(() => {
+      killContainer()
+      finish({
+        exitCode: null,
+        timedOut: true,
+        durationMs: Date.now() - started,
+        agentExit: null,
+        verifyExit: null,
+        guard: null,
+      })
+    }, options.timeoutMs)
+    const poller = setInterval(() => {
+      if (settled) return
+      const log = findSessionLog(options.traceDir)
+      if (log === null) return
+      let text: string
+      try {
+        text = readFileSync(log, 'utf8')
+      } catch {
+        return
+      }
+      const lines = text.split(/\r?\n/u)
+      while (processedLines < lines.length) {
+        const line = lines[processedLines]
+        if (line === undefined) return
+        if (line.trim() === '') {
+          processedLines += 1
+          continue
+        }
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(line)
+        } catch {
+          return
+        }
+        processedLines += 1
+        const trip = guard.observe(
+          parsed as {
+            readonly type?: string
+            readonly step?: number
+            readonly data?: { readonly name?: string; readonly arguments?: string }
+          },
+        )
+        if (trip !== null) {
+          killContainer()
+          finish({
+            exitCode: null,
+            timedOut: false,
+            durationMs: Date.now() - started,
+            agentExit: null,
+            verifyExit: null,
+            guard: trip,
+          })
+          return
+        }
+      }
+    }, 2000)
+    child.once('error', (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearInterval(poller)
+      reject(error)
+    })
+    child.once('close', (code) => {
+      const log = out.join('') + err.join('')
+      finish({
+        exitCode: code,
+        timedOut: false,
+        durationMs: Date.now() - started,
+        agentExit: marker(log, 'AGENT_EXIT'),
+        verifyExit: marker(log, 'VERIFY_EXIT'),
+        guard: null,
+      })
+    })
+  })
 }
 
 function readVerifier(

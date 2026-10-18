@@ -268,7 +268,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
           '',
         ].join('\n'),
       )
-      const containerEpisode = runContainerEpisode({
+      const containerEpisode = await runContainerEpisode({
         manifest: loadedManifest.manifest,
         task,
         taskDir,
@@ -281,6 +281,8 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
         profileName: profile.profileName,
         runEnv: spec.env,
         timeoutMs: spec.timeoutMs,
+        guard: spec.guard,
+        containerName: 'dsh-eval-' + runId + '-' + String(index + 1),
         logPath: join(taskDir, 'agent', 'container.log'),
       })
       writeFileSync(join(taskDir, 'agent', 'stdout.log'), containerEpisode.log)
@@ -289,7 +291,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
         exitCode: containerEpisode.exitCode,
         timedOut: containerEpisode.timedOut,
         durationMs: containerEpisode.durationMs,
-        guard: null,
+        guard: containerEpisode.guard,
         verify: containerEpisode.verify,
       }
     } else {
