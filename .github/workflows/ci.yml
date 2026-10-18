@@ -11,8 +11,8 @@ jobs:
       run:
         working-directory: dsh-eval-harness
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22.19'
       - name: Install dashboard dependencies
@@ -39,8 +39,8 @@ jobs:
       DSH_EVAL_DOCKER_TESTS: '1'
       DSH_EVAL_PIP_INDEX: 'https://pypi.org/simple'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22.19'
       - name: Install workspace dependencies
@@ -49,3 +49,4 @@ jobs:
         run: npm run build
       - name: Container E2E (agent exit code, timeout, guard, grader isolation)
         run: npm run test:pipeline
+
