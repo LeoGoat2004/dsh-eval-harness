@@ -116,6 +116,7 @@ export function foldMetrics(events: readonly TraceEvent[]): TraceMetrics {
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
   let reasoningTokens = 0
+  let totalTokens = 0
   let llmMs = 0
   let toolMs = 0
   let firstTime: number | null = null
@@ -143,11 +144,22 @@ export function foldMetrics(events: readonly TraceEvent[]): TraceMetrics {
         }
         const usage = isRecord(event.data.usage) ? event.data.usage : null
         if (usage !== null) {
-          inputTokens += numberOr(usage.inputTokens, 0)
-          outputTokens += numberOr(usage.outputTokens, 0)
-          cacheReadTokens += numberOr(usage.cacheReadTokens, 0)
-          cacheWriteTokens += numberOr(usage.cacheWriteTokens, 0)
+          const eventInput = numberOr(usage.inputTokens, 0)
+          const eventOutput = numberOr(usage.outputTokens, 0)
+          const eventCacheRead = numberOr(usage.cacheReadTokens, 0)
+          const eventCacheWrite = numberOr(usage.cacheWriteTokens, 0)
+          inputTokens += eventInput
+          outputTokens += eventOutput
+          cacheReadTokens += eventCacheRead
+          cacheWriteTokens += eventCacheWrite
           reasoningTokens += numberOr(usage.reasoningTokens, 0)
+          // The trace's own total is authoritative; computing it from parts can
+          // double-count reasoning/cache tokens (the provider may already include
+          // them in outputTokens or the total).
+          totalTokens += numberOr(
+            usage.totalTokens,
+            eventInput + eventOutput + eventCacheRead + eventCacheWrite,
+          )
         }
         break
       }
@@ -201,7 +213,7 @@ export function foldMetrics(events: readonly TraceEvent[]): TraceMetrics {
     cacheReadTokens,
     cacheWriteTokens,
     reasoningTokens,
-    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens + reasoningTokens,
+    totalTokens,
     contextTokens: inputTokens + cacheReadTokens + cacheWriteTokens,
     llmMs,
     toolMs,

@@ -6,6 +6,7 @@ import {
   manifestRequirements,
   manifestTaskRoot,
   renderTemplate,
+  requireSafeRelativePath,
   type LoadedBenchmarkManifest,
 } from './manifest.ts'
 
@@ -76,8 +77,12 @@ export async function loadBenchmarkFromManifest(
     let testFiles: readonly string[] = []
     if (manifest.tasks.meta !== undefined) {
       const meta = JSON.parse(await readFile(join(exerciseDir, manifest.tasks.meta.file), 'utf8')) as unknown
-      solutionFiles = readStringArray(meta, manifest.tasks.meta.solutionFiles)
-      testFiles = readStringArray(meta, manifest.tasks.meta.testFiles)
+      solutionFiles = readStringArray(meta, manifest.tasks.meta.solutionFiles).map((file) =>
+        requireSafeRelativePath(file, 'task ' + id + ' solutionFiles'),
+      )
+      testFiles = readStringArray(meta, manifest.tasks.meta.testFiles).map((file) =>
+        requireSafeRelativePath(file, 'task ' + id + ' testFiles'),
+      )
       if (solutionFiles.length === 0 || testFiles.length === 0) {
         throw new Error('benchmark: task "' + id + '" declares no solution or test files')
       }

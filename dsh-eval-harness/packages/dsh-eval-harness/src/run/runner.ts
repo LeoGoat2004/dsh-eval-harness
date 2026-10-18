@@ -18,6 +18,7 @@ import {
 import { foldMetrics, normalizeEvents, readTrace, type TraceMetrics } from './collect.ts'
 import {
   containerImageCheck,
+  containerImageDigest,
   containerVars,
   dockerRuntimeCheck,
   renderContainerValue,
@@ -169,6 +170,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       ? (loadedManifest.manifest.execution.container ?? null)
       : null
   const containerChecks: PreflightCheck[] = []
+  const containerImages: { image: string; digest: string | null }[] = []
   if (containerExecution !== null) {
     const docker = dockerRuntimeCheck()
     containerChecks.push({ name: 'container-runtime', ok: docker.ok, detail: docker.detail })
@@ -185,6 +187,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       for (const image of images) {
         const check = containerImageCheck(image)
         containerChecks.push({ name: 'container-image:' + image, ok: check.ok, detail: check.detail })
+        if (check.ok) containerImages.push({ image, digest: containerImageDigest(image) })
       }
     }
   }
@@ -205,18 +208,22 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     )
   }
 
+  const benchmarkGit = readGitState(spec.benchmarkRoot)
+  const manifestSha256 = sha256(readFileSync(spec.manifestPath, 'utf8'))
+  const dshVersionActual = readDshVersionSafe(spec.dshBin)
   writeJson(join(runDir, 'run.json'), {
     runId,
     planDigest: spec.planDigest ?? null,
     benchmark: benchmark.name,
     benchmarkRevision: benchmark.revision,
-    benchmarkGit: readGitState(spec.benchmarkRoot),
+    benchmarkGit,
     manifestPath: spec.manifestPath ?? null,
-    manifestSha256: sha256(readFileSync(spec.manifestPath, 'utf8')),
+    manifestSha256,
+    containerImages,
     language: benchmark.language,
     tasks: [...benchmark.tasks.map((task) => task.id)],
     dshVersion: spec.dshVersion,
-    dshVersionActual: readDshVersionSafe(spec.dshBin),
+    dshVersionActual,
     dshBin: spec.dshBin,
     profile: profile.profileName,
     harness: profile.snapshot,
@@ -425,6 +432,17 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   )
   const reportPath = join(runDir, 'report.json')
   writeJson(reportPath, {
+    schemaVersion: 2,
+    provenance: {
+      manifestPath: spec.manifestPath,
+      manifestSha256,
+      benchmarkGit,
+      planDigest: spec.planDigest ?? null,
+      dshVersionActual,
+      containerImages,
+      node: process.version,
+      platform: process.platform,
+    },
     manifest: {
       runId,
       benchmark: benchmark.name,

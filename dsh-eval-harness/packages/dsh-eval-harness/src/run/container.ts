@@ -75,6 +75,21 @@ export function containerImageCheck(image: string): ContainerCheck {
 }
 
 /**
+ * Read the resolved digest of a local image; null when it cannot be inspected.
+ * @param image - image reference.
+ * @returns repo digest (or image id) for the reproducibility record.
+ */
+export function containerImageDigest(image: string): string | null {
+  const result = spawnSync(
+    'docker',
+    ['image', 'inspect', '--format', '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}', image],
+    { encoding: 'utf8', timeout: 30_000, windowsHide: true },
+  )
+  const digest = (result.stdout ?? '').trim()
+  return result.status === 0 && digest !== '' ? digest : null
+}
+
+/**
  * Render one container value: host-environment placeholders first, then task
  * variables. Unknown placeholders stay untouched so misconfiguration is visible.
  * @param value - template string.

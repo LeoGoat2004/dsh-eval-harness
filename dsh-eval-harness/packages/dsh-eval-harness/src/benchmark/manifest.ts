@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import type { EnvironmentRequirement } from '../run/environment.ts'
@@ -173,7 +173,7 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
       : (() => {
           const value = requireObject(tasks.meta, 'tasks.meta')
           return {
-            file: requireString(value.file, 'tasks.meta.file'),
+            file: requireSafeRelativePath(value.file, 'tasks.meta.file'),
             solutionFiles: requireString(value.solutionFiles, 'tasks.meta.solutionFiles'),
             testFiles: requireString(value.testFiles, 'tasks.meta.testFiles'),
           }
@@ -183,7 +183,7 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
     const entry = requireObject(item, 'prompt.files[' + String(index) + ']')
     const optional = entry.optional === true ? { optional: true } : {}
     const field = entry.field === undefined ? {} : { field: requireString(entry.field, 'prompt.files[' + String(index) + '].field') }
-    return { path: requireString(entry.path, 'prompt.files[' + String(index) + '].path'), ...optional, ...field }
+    return { path: requireSafeRelativePath(entry.path, 'prompt.files[' + String(index) + '].path'), ...optional, ...field }
   })
   const template = requireString(prompt.template, 'prompt.template')
   if (!template.includes('{{prompt}}')) {
@@ -337,7 +337,7 @@ function validateReference(
   if (reference.target !== 'solutionFiles[0]' && reference.target !== 'allSolutionFiles') {
     throw new Error('manifest(' + path + '): reference.target must be solutionFiles[0] or allSolutionFiles')
   }
-  return { file: requireString(reference.file, 'reference.file'), target: reference.target }
+  return { file: requireSafeRelativePath(reference.file, 'reference.file'), target: reference.target }
 }
 
 const REQUIREMENT_KINDS = new Set<string>([
@@ -380,6 +380,25 @@ function requireString(value: unknown, field: string): string {
 
 function requireStringArray(value: unknown, field: string): readonly string[] {
   return requireArray(value, field).map((item, index) => requireString(item, field + '[' + String(index) + ']'))
+}
+
+/**
+ * Require a benchmark-relative path that cannot escape its root.
+ *
+ * Manifests and task metadata are contracts, but they must never read outside
+ * the benchmark checkout; absolute paths and `..` segments are rejected.
+ * @param value - raw path value.
+ * @param field - field name used in the error message.
+ * @returns the unchanged relative path.
+ */
+export function requireSafeRelativePath(value: unknown, field: string): string {
+  const path = requireString(value, field)
+  if (isAbsolute(path)) throw new Error('manifest: ' + field + ' must be a relative path')
+  const segments = path.replaceAll('\\', '/').split('/')
+  if (segments.some((segment) => segment === '..')) {
+    throw new Error('manifest: ' + field + ' must not contain ".."')
+  }
+  return path
 }
 
 /** Unlike requireStringArray, an empty list is valid (e.g. no workspace excludes). */
