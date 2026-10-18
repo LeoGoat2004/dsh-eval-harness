@@ -7,7 +7,7 @@ import type { Config } from '../config.ts'
 import { resolveCredential } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
 import { generateDashboard } from '../report/dashboard.ts'
-import { planDigest } from '../run/plan.ts'
+import { digestPlan } from '../run/plan.ts'
 import { startRunJob } from '../run/jobs.ts'
 import { runEvaluation } from '../run/runner.ts'
 
@@ -135,20 +135,6 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       }
       const profileDir = resolveProfileDir(input.harnessProfile)
       const target = resolveModelTarget(profileDir, input.provider, input.model)
-      const expectedDigest = planDigest({
-        harnessProfileDir: profileDir,
-        harnessMode: input.harnessMode as 'profile-snapshot' | 'minimal-control',
-        dshVersion: input.dshVersion,
-        provider: target.provider,
-        model: target.model,
-        manifestPath: input.manifestPath,
-        language: input.language,
-        revision: input.revision,
-        tasks: input.tasks,
-      })
-      if (input.planDigest !== expectedDigest) {
-        throw new Error('eval_run: planDigest does not match the confirmed plan; re-run eval_preflight')
-      }
       const credential = resolveCredential(target.apiKeyEnv)
       if (credential === null) {
         throw new Error(
@@ -163,6 +149,24 @@ export function createEvalRunTool(config: Config): ToolDefinition {
         throw new Error('eval_run: manifestPath must be an absolute path')
       }
       const benchmarkRoot = resolve(input.benchmarkRoot)
+      const expectedDigest = digestPlan({
+        harnessProfileDir: profileDir,
+        harnessMode: input.harnessMode as 'profile-snapshot' | 'minimal-control',
+        dshVersion: input.dshVersion,
+        provider: target.provider,
+        model: target.model,
+        ...(target.api === undefined ? {} : { api: target.api }),
+        ...(target.baseURL === undefined ? {} : { baseURL: target.baseURL }),
+        apiKeyEnv: target.apiKeyEnv,
+        manifestPath: input.manifestPath,
+        benchmarkRoot,
+        language: input.language,
+        revision: input.revision,
+        tasks: input.tasks,
+      })
+      if (input.planDigest !== expectedDigest) {
+        throw new Error('eval_run: planDigest does not match the confirmed plan; re-run eval_preflight')
+      }
       const env: NodeJS.ProcessEnv = { ...process.env }
       for (const key of Object.keys(env)) {
         if (key.startsWith('DSH_')) delete env[key]

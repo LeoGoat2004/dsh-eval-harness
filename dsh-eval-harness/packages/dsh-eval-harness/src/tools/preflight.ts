@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadManifest, manifestRequirements } from '../benchmark/manifest.ts'
-import { planDigest } from '../run/plan.ts'
+import { digestPlan } from '../run/plan.ts'
 import { credentialPresent } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
 import { auditHarnessProfile } from '../run/environment-audit.ts'
@@ -28,7 +28,7 @@ export interface EvalPreflightResult {
       baseURL: string
       apiKeyEnv: string
     }
-    benchmark: { name: string; language: string; revision: string; tasks: string[] }
+    benchmark: { name: string; root: string; language: string; revision: string; tasks: string[] }
   }
   ready: boolean
   /** Immutable digest of the confirmed plan; required by eval_run. */
@@ -69,6 +69,11 @@ export function createEvalPreflightTool(): ToolDefinition {
         type: 'string',
         required: true,
         description: 'benchmark manifest 的绝对路径（环境需求以它为准）',
+      },
+      benchmarkRoot: {
+        type: 'string',
+        required: true,
+        description: 'benchmark checkout 根目录（进入 planDigest 内容寻址）',
       },
       language: { type: 'string', required: true, description: '语言轨道，如 python' },
       revision: { type: 'string', required: true, description: 'benchmark 的 pinned revision' },
@@ -117,6 +122,7 @@ export function createEvalPreflightTool(): ToolDefinition {
                 required: true,
                 properties: {
                   name: { type: 'string', required: true },
+                  root: { type: 'string', required: true },
                   language: { type: 'string', required: true },
                   revision: { type: 'string', required: true },
                   tasks: { type: 'array', required: true, items: { type: 'string' } },
@@ -212,6 +218,7 @@ export function createEvalPreflightTool(): ToolDefinition {
         readonly provider: string
         readonly model: string
         readonly manifestPath: string
+        readonly benchmarkRoot: string
         readonly harnessMode: string
         readonly language: string
         readonly revision: string
@@ -221,6 +228,9 @@ export function createEvalPreflightTool(): ToolDefinition {
       const target = resolveModelTarget(profileDir, input.provider, input.model)
       if (input.harnessMode !== 'profile-snapshot' && input.harnessMode !== 'minimal-control') {
         throw new Error('eval_preflight: harnessMode must be profile-snapshot or minimal-control')
+      }
+      if (!existsSync(input.benchmarkRoot)) {
+        throw new Error('eval_preflight: benchmark root not found: ' + input.benchmarkRoot)
       }
       const manifest = loadManifest(input.manifestPath).manifest
       const requirements = manifestRequirements(manifest)
@@ -247,6 +257,7 @@ export function createEvalPreflightTool(): ToolDefinition {
         },
         benchmark: {
           name: manifest.name,
+          root: input.benchmarkRoot,
           language: input.language,
           revision: input.revision,
           tasks: [...input.tasks],
@@ -255,13 +266,17 @@ export function createEvalPreflightTool(): ToolDefinition {
       return {
         plan,
         // eval_run must present this digest; it recomputes it from its own inputs.
-        planDigest: planDigest({
+        planDigest: digestPlan({
           harnessProfileDir: profileDir,
           harnessMode: input.harnessMode as 'profile-snapshot' | 'minimal-control',
           dshVersion: input.dshVersion,
           provider: target.provider,
           model: target.model,
+          ...(target.api === undefined ? {} : { api: target.api }),
+          ...(target.baseURL === undefined ? {} : { baseURL: target.baseURL }),
+          apiKeyEnv: target.apiKeyEnv,
           manifestPath: input.manifestPath,
+          benchmarkRoot: input.benchmarkRoot,
           language: input.language,
           revision: input.revision,
           tasks: input.tasks,

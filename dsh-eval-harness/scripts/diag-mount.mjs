@@ -2,7 +2,7 @@
 // minimal fake `tools` service, and prove `apply()` actually registers the
 // expected tool. This covers the wiring that the factory-only check misses.
 import { Context, Service } from '@deepseek-ai/cordis'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -47,6 +47,8 @@ const failures = []
 // Hermetic fixture: the mount contract must not depend on the host having a
 // benchmark checkout, Python or Docker. It only requires Node itself.
 const fixtureRoot = mkdtempSync(join(tmpdir(), 'dsh-eval-mount-'))
+const benchRoot = join(fixtureRoot, 'bench')
+mkdirSync(benchRoot, { recursive: true })
 const fixtureManifest = join(fixtureRoot, 'manifest.yml')
 writeFileSync(
   fixtureManifest,
@@ -175,6 +177,7 @@ if (preflight === undefined) {
     provider: 'siliconflow',
     model: 'Qwen/Qwen3-8B',
     manifestPath: fixtureManifest,
+    benchmarkRoot: benchRoot,
     language: 'node',
     revision: 'self-check',
     tasks: ['fixture-task'],
