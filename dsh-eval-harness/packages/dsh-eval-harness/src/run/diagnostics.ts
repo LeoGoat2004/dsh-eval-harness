@@ -26,25 +26,34 @@ export function deriveDiagnostics(
       },
     ]
 
-    if (task.observedModel !== null) {
-      const observed = task.observedModel
-      if (observed.provider !== declaredModel.provider || observed.model !== declaredModel.model) {
-        diagnostics.push({
-          kind: 'model-mismatch',
-          layer: 'model',
-          confidence: 'confirmed',
-          note:
-            'trace 请求的模型与确认的模型不一致：' +
-            observed.provider +
-            '/' +
-            observed.model +
-            ' ≠ ' +
-            declaredModel.provider +
-            '/' +
-            declaredModel.model,
-          evidence: evidence('model-mismatch', { artifact: 'trace' }),
-        })
-      }
+    // Verify every observed request, not only the first one: a mid-run model
+    // switch must be visible in the report.
+    const observedModels = task.observedModels.length > 0
+      ? task.observedModels
+      : task.observedModel === null
+        ? []
+        : [task.observedModel]
+    const mismatched = observedModels.filter(
+      (observed) => observed.provider !== declaredModel.provider || observed.model !== declaredModel.model,
+    )
+    if (mismatched.length > 0) {
+      diagnostics.push({
+        kind: 'model-mismatch',
+        layer: 'model',
+        confidence: 'confirmed',
+        note:
+          'trace 中 ' + String(mismatched.length) + ' 个请求的模型与确认的模型不一致：' +
+          mismatched.map((observed) => observed.provider + '/' + observed.model).join(', ') +
+          ' ≠ ' +
+          declaredModel.provider +
+          '/' +
+          declaredModel.model,
+        evidence: mismatched.map(() => ({
+          taskId: task.id,
+          artifact: 'trace',
+          rule: 'model-mismatch',
+        })),
+      })
     }
 
     if (task.homeLeaks.length > 0) {

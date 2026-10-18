@@ -14,6 +14,7 @@ const base = {
   metrics: null,
   verify: { ok: true, passed: 1, total: 1, checks: [], logPath: '/tmp/checks.json' },
   observedModel: { provider: 'deepseek-official', model: 'deepseek-flash' },
+  observedModels: [{ provider: 'deepseek-official', model: 'deepseek-flash' }],
   homeLeaks: [],
   guard: null,
 } as unknown as TaskSummary
@@ -59,13 +60,37 @@ describe('deriveDiagnostics', () => {
 
   it('confirms a model mismatch from the trace', () => {
     const diagnostics = deriveDiagnostics(
-      [{ ...base, observedModel: { provider: 'deepseek-official', model: 'other-model' } }],
+      [
+        {
+          ...base,
+          observedModel: { provider: 'deepseek-official', model: 'other-model' },
+          observedModels: [{ provider: 'deepseek-official', model: 'other-model' }],
+        },
+      ],
       declared,
     )
     expect(diagnostics[0]?.kind).toBe('model-mismatch')
     expect(diagnostics[0]?.layer).toBe('model')
     expect(diagnostics[0]?.confidence).toBe('confirmed')
     expect(diagnostics[0]?.evidence[0]?.rule).toBe('model-mismatch')
+  })
+
+  it('detects a mismatch that only appears in a later request', () => {
+    const diagnostics = deriveDiagnostics(
+      [
+        {
+          ...base,
+          observedModel: { provider: 'deepseek-official', model: 'deepseek-flash' },
+          observedModels: [
+            { provider: 'deepseek-official', model: 'deepseek-flash' },
+            { provider: 'siliconflow', model: 'Qwen/Qwen3-8B' },
+          ],
+        },
+      ],
+      declared,
+    )
+    expect(diagnostics[0]?.kind).toBe('model-mismatch')
+    expect(diagnostics[0]?.evidence).toHaveLength(1)
   })
 
   it('reports a home-directory leak as a probable harness problem', () => {

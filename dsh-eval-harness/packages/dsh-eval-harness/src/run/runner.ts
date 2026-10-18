@@ -15,7 +15,7 @@ import {
   writeTaskOverlay,
   type HarnessMode,
 } from './profile.ts'
-import { foldMetrics, normalizeEvents, readTrace, type TraceMetrics } from './collect.ts'
+import { foldMetrics, normalizeEvents, readObservedModels, readTrace, type ObservedModel, type TraceMetrics } from './collect.ts'
 import {
   containerImageCheck,
   containerImageDigest,
@@ -74,8 +74,10 @@ export interface TaskSummary {
   readonly sessionLog: string | null
   readonly metrics: TraceMetrics | null
   readonly verify: VerifyResult | null
-  /** Provider/model the trace actually requested, when a request header exists. */
+  /** Provider/model the trace actually requested (first request header). */
   readonly observedModel: { readonly provider: string; readonly model: string } | null
+  /** Every distinct provider/model observed in the trace's request headers. */
+  readonly observedModels: readonly ObservedModel[]
   /** Trace rows whose payload mentions the user home directory (isolation leak). */
   readonly homeLeaks: readonly { readonly seq: number; readonly type: string }[]
   /** SHA-256 over the prompt and solution/test file contents seen by the task. */
@@ -131,6 +133,7 @@ function taskFailureSummary(task: BenchmarkTask, taskDir: string, phase: TaskPha
     metrics: null,
     verify: null,
     observedModel: null,
+    observedModels: [],
     homeLeaks: [],
     guard: null,
     error: 'task: ' + String(error),
@@ -194,12 +197,14 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       }
     }
   }
+  const executionBackend = containerExecution !== null ? 'container' : 'local'
   const preflight = preflightEnvironment(
     spec,
     runDir,
     dshHome,
     profile.profileName,
     benchmark.environment,
+    executionBackend,
     containerChecks,
   )
   writeJson(join(runDir, 'preflight.json'), preflight)
@@ -230,7 +235,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     dshBin: spec.dshBin,
     profile: profile.profileName,
     harness: profile.snapshot,
-    backend: 'local',
+    backend: executionBackend,
     model: spec.model,
     timeoutMs: spec.timeoutMs,
     permissionMode: spec.permissionMode,
@@ -343,6 +348,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     let metrics: TraceMetrics | null = null
     let traceError: string | undefined
     let observedModel: TaskSummary['observedModel'] = null
+    let observedModels: ObservedModel[] = []
     let homeLeaks: { seq: number; type: string }[] = []
     if (sessionLog !== null) {
       try {
@@ -350,7 +356,8 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
         writeFileSync(join(taskDir, 'events.jsonl'), normalizeEvents(trace).join('\n') + '\n')
         metrics = foldMetrics(trace.events)
         writeJson(join(taskDir, 'metrics.json'), metrics)
-        observedModel = readObservedModel(trace.events)
+        observedModels = readObservedModels(trace.events)
+        observedModel = observedModels[0] ?? null
         homeLeaks = findHomeLeaks(trace.events)
       } catch (error) {
         traceError = 'trace: ' + String(error)
@@ -383,6 +390,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       metrics,
       verify,
       observedModel,
+      observedModels,
       homeLeaks,
       guard: episode.guard,
       ...(episode.graderVisibility === undefined ? {} : { graderVisibility: episode.graderVisibility }),
@@ -399,6 +407,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       durationMs: summary.durationMs,
       sessionLog: summary.sessionLog,
       observedModel: summary.observedModel,
+      observedModels: summary.observedModels,
       homeLeaks: summary.homeLeaks,
       guard: summary.guard,
       ...(summary.graderVisibility === undefined ? {} : { graderVisibility: summary.graderVisibility }),
@@ -457,10 +466,10 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       dshVersion: spec.dshVersion,
       profile: profile.profileName,
       model: spec.model,
-      backend: 'local',
+      backend: executionBackend,
     },
     benchmark: { name: benchmark.name, language: benchmark.language, tasks: benchmark.tasks.map((task) => task.id) },
-    config: { dshVersion: spec.dshVersion, profile: profile.profileName, harness: profile.snapshot, model: spec.model, backend: 'local', guard: spec.guard },
+    config: { dshVersion: spec.dshVersion, profile: profile.profileName, harness: profile.snapshot, model: spec.model, backend: executionBackend, guard: spec.guard },
     environment: { recorded: true, ...preflight.environment },
     modelVerification: summarizeModelVerification(spec.model, summaries),
     isolation: summarizeIsolation(summaries),
@@ -521,27 +530,6 @@ function summarizeIsolation(summaries: readonly TaskSummary[]): IsolationSummary
 }
 
 /** Read the first request header's provider/model from raw trace events. */
-function readObservedModel(
-  events: readonly unknown[],
-): { readonly provider: string; readonly model: string } | null {
-  for (const event of events) {
-    const candidate = event as {
-      readonly type?: string
-      readonly data?: {
-        readonly header?: {
-          readonly config?: { readonly provider?: string; readonly model?: string }
-        }
-      }
-    }
-    if (candidate.type !== 'request/header') continue
-    const config = candidate.data?.header?.config
-    if (config?.provider !== undefined && config.model !== undefined) {
-      return { provider: config.provider, model: config.model }
-    }
-  }
-  return null
-}
-
 /** Normalize separators so JSON-escaped backslashes still compare as paths. */
 function normalizePathText(text: string): string {
   return text.toLowerCase().replace(/[\\/]+/gu, '/')
@@ -579,18 +567,26 @@ function summarizeModelVerification(
   readonly declared: { readonly provider: string; readonly model: string }
   readonly observed: { readonly provider: string; readonly model: string } | null
   readonly ok: boolean | null
-  readonly tasks: readonly { readonly id: string; readonly observedModel: TaskSummary['observedModel'] }[]
+  readonly tasks: readonly {
+    readonly id: string
+    readonly observedModels: readonly ObservedModel[]
+    readonly mismatch: boolean
+  }[]
 } {
-  const observedTasks = summaries.map((summary) => ({ id: summary.id, observedModel: summary.observedModel }))
-  const first = observedTasks.find((entry) => entry.observedModel !== null)?.observedModel ?? null
+  const tasks = summaries.map((summary) => ({
+    id: summary.id,
+    observedModels: summary.observedModels,
+    mismatch: summary.observedModels.some(
+      (observed) => observed.provider !== declared.provider || observed.model !== declared.model,
+    ),
+  }))
+  const observed = tasks.flatMap((task) => task.observedModels)
   return {
     declared: { provider: declared.provider, model: declared.model },
-    observed: first,
-    ok:
-      first === null
-        ? null
-        : first.provider === declared.provider && first.model === declared.model,
-    tasks: observedTasks,
+    observed: observed[0] ?? null,
+    // Every observed request must match; an empty observation is unknown.
+    ok: observed.length === 0 ? null : tasks.every((task) => !task.mismatch),
+    tasks,
   }
 }
 
@@ -603,7 +599,7 @@ interface PreflightCheck {
 
 /** Environment facts persisted with every run and shown on the dashboard. */
 export interface RunEnvironment {
-  readonly backend: 'local' | 'docker'
+  readonly backend: 'local' | 'container' | 'docker'
   readonly platform: string
   readonly arch: string
   readonly node: string
@@ -648,6 +644,7 @@ function preflightEnvironment(
   dshHome: string,
   profileName: string,
   requirements: readonly EnvironmentRequirement[],
+  backend: 'local' | 'container',
   extraChecks: readonly PreflightCheck[] = [],
 ): PreflightReport {
   const checks: PreflightCheck[] = [...extraChecks]
@@ -688,14 +685,16 @@ function preflightEnvironment(
     ok: checks.every((check) => check.ok),
     checks,
     environment: {
-      backend: 'local',
+      backend,
       platform: process.platform,
       arch: process.arch,
       node: process.version,
       workspaceRoot: runDir,
       dshHome,
       profile: profileName,
-      sandbox: 'workspace-write',
+      // In container mode the DSH permission mode does not describe the actual
+      // isolation; the agent runs inside the container with a split verifier.
+      sandbox: backend === 'container' ? 'container (agent/verifier split)' : spec.permissionMode,
       approval: 'non-interactive (no approver)',
       network: { policy: proxyConfigured ? 'proxy-configured' : 'direct' },
       requirements: probes,

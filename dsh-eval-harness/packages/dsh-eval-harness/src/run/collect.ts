@@ -281,3 +281,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
+
+/** Provider/model observed in one request header. */
+export interface ObservedModel {
+  readonly provider: string
+  readonly model: string
+}
+
+/**
+ * Collect every distinct provider/model observed in request headers, in order.
+ * Verifying only the first header would miss a mid-run or later task switch.
+ * @param events - trace events in log order.
+ * @returns unique observed model targets.
+ */
+export function readObservedModels(events: readonly unknown[]): ObservedModel[] {
+  const observed: ObservedModel[] = []
+  const seen = new Set<string>()
+  for (const event of events) {
+    const candidate = event as {
+      readonly type?: string
+      readonly data?: { readonly header?: { readonly config?: { readonly provider?: string; readonly model?: string } } }
+    }
+    if (candidate.type !== 'request/header') continue
+    const config = candidate.data?.header?.config
+    if (config?.provider === undefined || config.model === undefined) continue
+    const key = config.provider + '\u0000' + config.model
+    if (seen.has(key)) continue
+    seen.add(key)
+    observed.push({ provider: config.provider, model: config.model })
+  }
+  return observed
+}
