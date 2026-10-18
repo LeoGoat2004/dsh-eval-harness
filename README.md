@@ -39,9 +39,11 @@ Set `<profile>` to your DSH profile name (usually `desktop`), then restart DSH.
 3. **`eval_run`** — start the evaluation in the background. It requires the `planDigest` from
    preflight and refuses to run if the confirmed content changed. The harness under test is
    `faithful-snapshot` (profile used verbatim), `isolated-snapshot` (isolation/model rows added,
-   mutation diff recorded; `profile-snapshot` remains an alias) or the fixed `minimal-control`.
+   interactive app bundles swapped for the headless app, full mutation diff recorded;
+   `profile-snapshot` remains an alias) or the fixed `minimal-control`.
    In container mode the agent and the verifier are separate containers: the verifier only sees a
-   disposable artifact copy, and the report records a grader visibility audit.
+   disposable artifact copy, and the report records a grader visibility audit. A transient verifier
+   bootstrap failure is retried once when it leaves no usable judgement (`verifyRetries`, 0–3).
 4. **`eval_status`** — check progress and get the run directory, report path and dashboard path.
    Job records survive a restart; a job that was running is reported as `interrupted`.
 

@@ -373,7 +373,15 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
           '      - source: "{{taskDir}}"',
           '        target: /task',
           '        readOnly: true',
+          ...(options.verifyState
+            ? [
+                '    verifierMounts:',
+                '      - source: "{{artifactDir}}/verifier-state"',
+                '        target: /state',
+              ]
+            : []),
           ...(options.verifyWorkspaceRw ? ['    verifyWorkspace: read-write'] : []),
+          ...(options.verifyRetries === undefined ? [] : ['    verifyRetries: ' + String(options.verifyRetries)]),
           '    agentCommand: ' + JSON.stringify(agentCommand),
           '    verifyCommand: ' +
             JSON.stringify(
@@ -383,6 +391,7 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
         ].join('\n'),
       )
       writeFileSync(join(dir, 'prompt.md'), 'write out.py')
+      mkdirSync(join(dir, 'task-artifacts', 'verifier-state'), { recursive: true })
       const loaded = loadManifest(manifestPath)
       return runContainerEpisode({
         manifest: loaded.manifest,
@@ -453,10 +462,35 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
     check(existsSync(join(agentOut, 'out.txt')), 'agent output must stay in the preserved workspace')
     check(!existsSync(join(agentOut, 'tampered.txt')), 'verifier must not write into the preserved workspace')
     check(
-      existsSync(join(workDir, 'container-verify-isolated', 'verify', 'workspace-snapshot', 'tampered.txt')),
+      existsSync(join(workDir, 'container-verify-isolated', 'verify', 'attempt-1', '0', 'tampered.txt')),
       'writable verifier must write into its disposable snapshot',
     )
     check(isolatedVerify.verify.ok === false, 'a verifier without a junit report is not a passing grade')
+
+    // A transient bootstrap failure is retried once and can then grade.
+    const retried = await variant(
+      'verify-retry',
+      ['bash', '-lc', 'echo ok > /workspace/out.py'],
+      {
+        verifyState: true,
+        verifyRetries: 1,
+        verifyCommand: [
+          'bash',
+          '-lc',
+          'if [ ! -f /state/tried ]; then touch /state/tried; echo "502 Bad Gateway" >&2; exit 7; fi; python -m pytest /task/tests/test_out.py --junitxml=/dsh-verify/junit.xml -q',
+        ],
+      },
+    )
+    check(retried.verifyAttempts === 2, 'transient verifier failure must be retried')
+    check(retried.verify.ok === true, 'retried verifier must be able to grade')
+
+    // A real grading failure (no transient signature) must not be retried.
+    const noRetry = await variant('verify-no-retry', ['bash', '-lc', 'true'], {
+      verifyRetries: 1,
+      verifyCommand: ['bash', '-lc', 'echo boom >&2; exit 7'],
+    })
+    check(noRetry.verifyAttempts === 1, 'non-transient verifier failure must not be retried')
+    check(noRetry.verify.ok === false, 'non-transient verifier failure remains ungraded')
   }
 }
 
@@ -486,7 +520,7 @@ try {
 }
 check(refused, 'a missing model credential must fail preflight before any episode')
 
-rmSync(workDir, { recursive: true, force: true })
+if (process.env.DSH_EVAL_KEEP_FIXTURE !== '1') rmSync(workDir, { recursive: true, force: true })
 if (failures.length > 0) {
   console.error('PIPELINE SELF-CHECK FAIL')
   for (const failure of failures) console.error('  - ' + failure)

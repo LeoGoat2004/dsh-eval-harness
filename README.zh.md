@@ -34,8 +34,10 @@ dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 2. **`eval_manifest`** —— 校验 benchmark manifest；可选执行红绿检查（stub 必须失败，官方参考解必须通过）。
 3. **`eval_run`** —— 在后台启动评测，必须携带 preflight 返回的 `planDigest`；确认内容变化会被拒绝。
    被测对象三种模式：`faithful-snapshot`（profile 原样使用）、`isolated-snapshot`（追加隔离/模型行，
-   记录 mutation diff；`profile-snapshot` 为别名）或固定最小对照 `minimal-control`。
-   容器模式下 agent 与 verifier 是两个容器：verifier 只看到一次性产物副本，报告记录 grader 可见性审计。
+   交互式 app bundle 换成 headless app，完整 mutation diff 入库；`profile-snapshot` 为别名）或固定最小对照
+   `minimal-control`。容器模式下 agent 与 verifier 是两个容器：verifier 只看到一次性产物副本，
+   报告记录 grader 可见性审计；verifier 引导阶段的瞬时失败在无法给出判据时会自动重试一次
+   （manifest `verifyRetries`，0–3）。
 4. **`eval_status`** —— 查询进度，获取 run 目录、报告路径与看板路径。
    job 记录跨重启保留；重启时仍在 running 的 job 会显示为 `interrupted`。
 

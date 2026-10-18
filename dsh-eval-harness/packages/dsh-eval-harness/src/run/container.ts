@@ -27,6 +27,8 @@ export interface ContainerEpisodeResult {
   readonly guard: LoopGuardTrip | null
   /** Audit of which verifier-only paths the agent could also see. */
   readonly graderVisibility: GraderVisibility
+  /** Number of verifier attempts actually made (0 when grading was skipped). */
+  readonly verifyAttempts: number
   readonly verify: VerifyResult
 }
 
@@ -216,7 +218,9 @@ export async function runContainerEpisode(options: {
     return { args, targets }
   }
   const agentExtraMounts = renderMountSpecs(container.agentMounts ?? [])
-  const verifierOnlyMounts = renderMountSpecs(container.verifierMounts ?? container.mounts ?? [])
+  // `mounts` is the legacy alias of verifierMounts; both are verifier-only and
+  // may be combined without exposing anything to the agent.
+  const verifierOnlyMounts = renderMountSpecs([...(container.mounts ?? []), ...(container.verifierMounts ?? [])])
 
   const renderCommand = (command: readonly string[]): string => command.map((token) => shellQuote(render(token))).join(' ')
   const agentScript = join(options.verifyDir, 'agent.sh')
@@ -292,18 +296,14 @@ export async function runContainerEpisode(options: {
   const agentOk = agentExit === 0 && !agent.timedOut && agent.guard === null
 
   let artifactError: string | undefined
-  const artifactMounts: string[] = []
+  // Evidence sources for the verifier. Each is copied to a fresh disposable
+  // directory before every verifier attempt, so a writable grader can never
+  // rewrite the agent's evidence.
+  const verifierSources: { readonly evidenceDir: string; readonly target: string }[] = []
   const writable = container.verifyWorkspace === 'read-write' ? '' : ':ro'
   if (agentOk) {
-    // Snapshot the artifact directories so the verifier cannot touch the
-    // agent's container and the agent cannot reach the grader. The verifier
-    // always gets a disposable copy: the agent's output stays the evidence.
     if (container.mountWorkspace !== false) {
-      const snapshot = join(options.verifyDir, 'workspace-snapshot')
-      rmSync(snapshot, { recursive: true, force: true })
-      mkdirSync(snapshot, { recursive: true })
-      cpSync(options.workspaceDir, snapshot, { recursive: true, force: true })
-      artifactMounts.push('-v', snapshot + ':' + container.workspace + writable)
+      verifierSources.push({ evidenceDir: options.workspaceDir, target: container.workspace })
     } else {
       const artifacts = container.artifacts ?? []
       if (artifacts.length === 0) {
@@ -322,11 +322,7 @@ export async function runContainerEpisode(options: {
           artifactError = 'container execution: artifact snapshot failed for ' + artifactPath + ': ' + lastLine(copy.stderr)
           return
         }
-        // Verify on a copy so a writable grader cannot rewrite the evidence.
-        const verifierCopy = join(options.verifyDir, 'artifacts', String(index))
-        rmSync(verifierCopy, { recursive: true, force: true })
-        cpSync(hostDir, verifierCopy, { recursive: true, force: true })
-        artifactMounts.push('-v', verifierCopy + ':' + artifactPath + writable)
+        verifierSources.push({ evidenceDir: hostDir, target: artifactPath })
       })
     }
   }
@@ -345,6 +341,7 @@ export async function runContainerEpisode(options: {
       verifyExit: null,
       guard: agent.guard,
       graderVisibility,
+      verifyAttempts: 0,
       verify: {
         ok: false,
         passed: 0,
@@ -367,6 +364,7 @@ export async function runContainerEpisode(options: {
       verifyExit: null,
       guard: null,
       graderVisibility,
+      verifyAttempts: 0,
       verify: { ok: false, passed: 0, total: 0, checks: [], logPath: options.verifyDir, error: artifactError },
     }
   }
@@ -380,25 +378,59 @@ export async function runContainerEpisode(options: {
   for (const entry of container.verifyEnv ?? []) {
     verifyEnv.push('-e', render(entry.name) + '=' + render(entry.value))
   }
-  const verifier = await runDockerPhase({
-    args: [
-      'run',
-      '--name', verifierName,
-      ...artifactMounts,
-      ...verifierOnlyMounts.args,
-      ...verifyEnv,
-      '-v', options.verifyDir + ':' + CONTAINER_PATHS.verifyDir,
-      '-v', verifyScript + ':' + CONTAINER_PATHS.verifyScript + ':ro',
-      '-w', container.workspace,
-      verifierImage,
-      'bash', CONTAINER_PATHS.verifyScript,
-    ],
-    timeoutMs: Math.min(options.timeoutMs, 120_000),
-    containerName: verifierName,
-  })
-  spawnSync('docker', ['rm', '-f', verifierName], { stdio: 'ignore', windowsHide: true })
-  const verifyExit = verifier.timedOut ? null : marker(verifier.log, 'VERIFY_EXIT') ?? verifier.exitCode
-  const log = agentLog + verifier.log
+  // A benchmark's verifier bootstrap may install test dependencies over the
+  // network; a transient failure must not be reported as a task failure. Only
+  // retry when the run failed without a usable judgement, and only on known
+  // transient signatures.
+  const maxAttempts = 1 + Math.min(3, Math.max(0, container.verifyRetries ?? 1))
+  let attempts = 0
+  let verifyExit: number | null = null
+  let verifyLog = ''
+  let verifyResult: VerifyResult = {
+    ok: false,
+    passed: 0,
+    total: 0,
+    checks: [],
+    logPath: options.verifyDir,
+    error: 'verifier: did not run',
+  }
+  while (attempts < maxAttempts) {
+    attempts += 1
+    const attemptMounts: string[] = []
+    verifierSources.forEach((source, index) => {
+      const copy = join(options.verifyDir, 'attempt-' + String(attempts), String(index))
+      rmSync(copy, { recursive: true, force: true })
+      mkdirSync(copy, { recursive: true })
+      cpSync(source.evidenceDir, copy, { recursive: true, force: true })
+      attemptMounts.push('-v', copy + ':' + source.target + writable)
+    })
+    const verifier = await runDockerPhase({
+      args: [
+        'run',
+        '--name', verifierName,
+        ...attemptMounts,
+        ...verifierOnlyMounts.args,
+        ...verifyEnv,
+        '-v', options.verifyDir + ':' + CONTAINER_PATHS.verifyDir,
+        '-v', verifyScript + ':' + CONTAINER_PATHS.verifyScript + ':ro',
+        '-w', container.workspace,
+        verifierImage,
+        'bash', CONTAINER_PATHS.verifyScript,
+      ],
+      timeoutMs: Math.min(options.timeoutMs, 300_000),
+      containerName: verifierName,
+    })
+    spawnSync('docker', ['rm', '-f', verifierName], { stdio: 'ignore', windowsHide: true })
+    verifyExit = verifier.timedOut ? null : marker(verifier.log, 'VERIFY_EXIT') ?? verifier.exitCode
+    verifyLog += '# verifier attempt ' + String(attempts) + '\n' + verifier.log
+    verifyResult = verifier.timedOut
+      ? { ok: false, passed: 0, total: 0, checks: [], logPath: options.verifyDir, error: 'verifier: timed out' }
+      : readVerifier(options.verifyDir, container.verifyResult ?? 'junitxml', verifyExit, verifier.log)
+    if (verifyResult.ok) break
+    const transient = verifier.timedOut || (verifyExit !== 0 && isTransientVerifierFailure(verifier.log))
+    if (!transient || attempts >= maxAttempts) break
+  }
+  const log = agentLog + verifyLog
   writeFileSync(options.logPath, log)
   return {
     exitCode: agentExit,
@@ -409,11 +441,31 @@ export async function runContainerEpisode(options: {
     verifyExit,
     guard: null,
     graderVisibility,
-    verify:
-      verifier.timedOut
-        ? { ok: false, passed: 0, total: 0, checks: [], logPath: options.verifyDir, error: 'verifier: timed out' }
-        : readVerifier(options.verifyDir, container.verifyResult ?? 'junitxml', verifyExit, verifier.log),
+    verifyAttempts: attempts,
+    verify: verifyResult,
   }
+}
+
+/** Network/bootstrap failures that justify retrying a verifier once. */
+export function isTransientVerifierFailure(log: string): boolean {
+  const patterns = [
+    '502 Bad Gateway',
+    '503 Service',
+    '504 Gateway',
+    'Bad Gateway',
+    'Temporary failure',
+    'Could not resolve',
+    'Name or service not known',
+    'Connection timed out',
+    'Operation timed out',
+    'Network is unreachable',
+    'Failed to fetch',
+    'curl: (',
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'ECONNREFUSED',
+  ]
+  return patterns.some((pattern) => log.includes(pattern))
 }
 
 /** Run one docker phase, optionally polling the trace with the loop guard. */

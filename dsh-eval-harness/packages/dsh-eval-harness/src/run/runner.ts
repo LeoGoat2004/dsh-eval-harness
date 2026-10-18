@@ -86,6 +86,8 @@ export interface TaskSummary {
   readonly guard: LoopGuardTrip | null
   /** Container-only audit of what the agent could see of the verifier. */
   readonly graderVisibility?: GraderVisibility
+  /** Container-only: verifier attempts made (0 = grading skipped). */
+  readonly verifyAttempts?: number
   readonly error?: string
 }
 
@@ -163,11 +165,6 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   const runDir = join(spec.outputDir, runId)
   mkdirSync(join(runDir, 'tasks'), { recursive: true })
   const dshHome = join(runDir, 'dsh-home')
-  const profile = materializeProfile(dshHome, spec.profileName, spec.model, {
-    mode: spec.harnessMode,
-    ...(spec.harnessProfileDir === undefined ? {} : { sourceProfileDir: spec.harnessProfileDir }),
-  })
-
   // Environment facts are part of the result: a lab-side failure must never be
   // reported as a DSH defect. Preflight fails fast when the environment is not
   // ready, so the user configures it before any model call is spent.
@@ -175,6 +172,14 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     loadedManifest.manifest.execution?.kind === 'container'
       ? (loadedManifest.manifest.execution.container ?? null)
       : null
+  const profile = materializeProfile(dshHome, spec.profileName, spec.model, {
+    mode: spec.harnessMode,
+    ...(spec.harnessProfileDir === undefined ? {} : { sourceProfileDir: spec.harnessProfileDir }),
+    // A host junction into the evaluated container is meaningless: copy the
+    // linked profile dependencies so the snapshot is self-contained.
+    copyLinkedModules: containerExecution !== null,
+  })
+
   const containerChecks: PreflightCheck[] = []
   const containerImages: { image: string; digest: string | null }[] = []
   if (containerExecution !== null) {
@@ -266,6 +271,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       guard: { readonly reason: string } | null
       verify: VerifyResult
       graderVisibility?: GraderVisibility
+      verifyAttempts?: number
     }
     if (containerExecution !== null) {
       if (containerExecution.mountWorkspace !== false) prepareWorkspace(task, workspaceDir)
@@ -310,6 +316,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
         guard: containerEpisode.guard,
         verify: containerEpisode.verify,
         graderVisibility: containerEpisode.graderVisibility,
+        verifyAttempts: containerEpisode.verifyAttempts,
       }
     } else {
       prepareWorkspace(task, workspaceDir)
@@ -394,6 +401,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       homeLeaks,
       guard: episode.guard,
       ...(episode.graderVisibility === undefined ? {} : { graderVisibility: episode.graderVisibility }),
+      ...(episode.verifyAttempts === undefined ? {} : { verifyAttempts: episode.verifyAttempts }),
       inputDigest,
       ...(status.error === undefined ? {} : { error: status.error }),
     }
@@ -411,6 +419,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       homeLeaks: summary.homeLeaks,
       guard: summary.guard,
       ...(summary.graderVisibility === undefined ? {} : { graderVisibility: summary.graderVisibility }),
+      ...(summary.verifyAttempts === undefined ? {} : { verifyAttempts: summary.verifyAttempts }),
       ...(summary.inputDigest === undefined ? {} : { inputDigest: summary.inputDigest }),
       checks: { passed: verify.passed, total: verify.total, ok: verify.ok },
       ...(summary.error === undefined ? {} : { error: summary.error }),
@@ -482,6 +491,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       metrics: summary.metrics,
       guard: summary.guard,
       ...(summary.graderVisibility === undefined ? {} : { graderVisibility: summary.graderVisibility }),
+      ...(summary.verifyAttempts === undefined ? {} : { verifyAttempts: summary.verifyAttempts }),
       ...(summary.inputDigest === undefined ? {} : { inputDigest: summary.inputDigest }),
       checks: summary.verify === null ? null : { passed: summary.verify.passed, total: summary.verify.total, ok: summary.verify.ok },
       ...(summary.error === undefined ? {} : { error: summary.error }),

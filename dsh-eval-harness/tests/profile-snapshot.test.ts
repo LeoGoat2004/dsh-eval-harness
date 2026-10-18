@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -104,11 +104,66 @@ describe('materializeProfile', () => {
     expect(first.snapshot.digest).not.toBe(second.snapshot.digest)
   })
 
+  it('copies linked profile dependencies for self-contained snapshots', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
+    const source = sourceProfile(root, '1')
+    const linked = join(root, 'linked-bundle')
+    mkdirSync(linked, { recursive: true })
+    writeFileSync(join(linked, 'package.json'), JSON.stringify({ name: 'linked-bundle', version: '1.0.0' }))
+    mkdirSync(join(source, 'node_modules'), { recursive: true })
+    symlinkSync(linked, join(source, 'node_modules', 'linked-bundle'), 'junction')
+    const materialized = materializeProfile(join(root, 'home'), 'eval', target(), {
+      mode: 'isolated-snapshot',
+      sourceProfileDir: source,
+      copyLinkedModules: true,
+    })
+    expect(materialized.snapshot.nodeModulesCopied).toBe(true)
+    expect(materialized.snapshot.nodeModulesLinked).toBe(false)
+    const copied = join(materialized.profileDir, 'node_modules', 'linked-bundle')
+    expect(lstatSync(copied).isSymbolicLink()).toBe(false)
+    expect(readFileSync(join(copied, 'package.json'), 'utf8')).toContain('linked-bundle')
+  })
+
   it('keeps the fixed minimal control arm explicit', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
     const materialized = materializeProfile(join(root, 'home'), 'eval', target(), { mode: 'minimal-control' })
     expect(materialized.snapshot.mode).toBe('minimal-control')
     expect(materialized.snapshot.sourceProfileDir).toBeNull()
     expect(materialized.snapshot.bundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'])
+  })
+
+  it('appends the headless app for an interactive profile and records it', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
+    const source = sourceProfile(root, '1')
+    writeFileSync(
+      join(source, 'package.json'),
+      JSON.stringify({ name: 'fixture', dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } } }),
+    )
+    const materialized = materializeProfile(join(root, 'home'), 'eval', target(), {
+      mode: 'isolated-snapshot',
+      sourceProfileDir: source,
+    })
+    expect(materialized.snapshot.bundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+    expect(materialized.snapshot.effectiveBundles).toEqual([
+      '@deepseek-ai/dsh-base',
+      '@deepseek-ai/dsh-headless',
+    ])
+    expect(materialized.snapshot.mutationDiff.addedBundles).toEqual(['@deepseek-ai/dsh-headless'])
+    expect(materialized.snapshot.mutationDiff.removedBundles).toEqual(['@deepseek-ai/dsh-web-app'])
+  })
+
+  it('faithful mode never appends the headless app', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
+    const source = sourceProfile(root, '1')
+    writeFileSync(
+      join(source, 'package.json'),
+      JSON.stringify({ name: 'fixture', dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } } }),
+    )
+    const materialized = materializeProfile(join(root, 'home'), 'eval', target(), {
+      mode: 'faithful-snapshot',
+      sourceProfileDir: source,
+    })
+    expect(materialized.snapshot.effectiveBundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+    expect(materialized.snapshot.mutationDiff.addedBundles).toEqual([])
   })
 })

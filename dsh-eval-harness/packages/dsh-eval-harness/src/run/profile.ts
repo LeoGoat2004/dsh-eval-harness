@@ -15,6 +15,10 @@ export type CanonicalHarnessMode = 'faithful-snapshot' | 'isolated-snapshot' | '
 
 /** Every mutation the isolated snapshot applies to the confirmed profile. */
 export interface MutationDiff {
+  /** Bundles appended by the plugin (e.g. the headless app for one-shot runs). */
+  readonly addedBundles: readonly string[]
+  /** Bundles removed by the plugin (interactive app bundles for one-shot runs). */
+  readonly removedBundles: readonly string[]
   /** Rows appended by the plugin that the source profile did not declare. */
   readonly addedRows: readonly string[]
   /** Source rows whose id the plugin re-declares (last declaration wins). */
@@ -31,8 +35,12 @@ export interface HarnessSnapshot {
   /** Source profile copied in snapshot modes; null for `minimal-control`. */
   readonly sourceProfileDir: string | null
   readonly bundles: readonly string[]
+  /** Bundles actually mounted, including appended ones recorded in mutationDiff. */
+  readonly effectiveBundles: readonly string[]
   /** Whether the snapshot reuses the source profile's installed modules. */
   readonly nodeModulesLinked: boolean
+  /** Whether linked profile dependencies were copied (self-contained snapshot). */
+  readonly nodeModulesCopied: boolean
   /** Rows the snapshot refuses to copy (reserved for future bundle filtering). */
   readonly excludedRows: readonly string[]
   /** Exact mutation diff applied to the source profile. */
@@ -69,6 +77,10 @@ export interface EpisodeProcessResult {
 }
 
 const EVAL_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless']
+/** App bundle that turns a profile into a one-shot headless runner. */
+const HEADLESS_BUNDLE = '@deepseek-ai/dsh-headless'
+/** Interactive app bundle that cannot answer one headless prompt. */
+const INTERACTIVE_APP_BUNDLES = ['@deepseek-ai/dsh-web-app']
 
 /** Rows appended to every eval profile: credential isolation, no skills, fixed model. */
 function evalRows(target: ModelTarget): string[] {
@@ -147,13 +159,21 @@ export function materializeProfile(
   dshHome: string,
   profileName: string,
   target: ModelTarget,
-  options: { readonly mode: HarnessMode; readonly sourceProfileDir?: string },
+  options: { readonly mode: HarnessMode; readonly sourceProfileDir?: string; readonly copyLinkedModules?: boolean },
 ): EvalProfilePaths {
   const profileDir = join(dshHome, 'profiles', profileName)
   mkdirSync(profileDir, { recursive: true })
   const mode = canonicalHarnessMode(options.mode)
   if (mode !== 'minimal-control') {
-    return materializeSnapshot(profileDir, profileName, dshHome, target, options.sourceProfileDir, mode)
+    return materializeSnapshot(
+      profileDir,
+      profileName,
+      dshHome,
+      target,
+      options.sourceProfileDir,
+      mode,
+      options.copyLinkedModules === true,
+    )
   }
   writeJson(join(profileDir, 'package.json'), {
     name: 'dsh-profile-' + profileName,
@@ -166,9 +186,11 @@ export function materializeProfile(
     mode: 'minimal-control',
     sourceProfileDir: null,
     bundles: [...EVAL_BUNDLES],
+    effectiveBundles: [...EVAL_BUNDLES],
     nodeModulesLinked: false,
+    nodeModulesCopied: false,
     excludedRows: [],
-    mutationDiff: { addedRows: [], overriddenRows: [], disabledRows: [], hermetic: true },
+    mutationDiff: { addedBundles: [], removedBundles: [], addedRows: [], overriddenRows: [], disabledRows: [], hermetic: true },
     resolvedBundles: {},
     digest: digestOf({ mode: 'minimal-control', bundles: EVAL_BUNDLES, rows: evalRows(target) }),
     files: {},
@@ -184,6 +206,7 @@ function materializeSnapshot(
   target: ModelTarget,
   sourceProfileDir: string | undefined,
   mode: 'faithful-snapshot' | 'isolated-snapshot',
+  copyLinkedModules: boolean,
 ): EvalProfilePaths {
   if (sourceProfileDir === undefined || !existsSync(sourceProfileDir)) {
     throw new Error(mode + ' requires an existing source profile directory')
@@ -209,7 +232,7 @@ function materializeSnapshot(
     // Faithful: the confirmed profile is used exactly as-is; only the trace
     // overlay is injected per task (outside the profile).
     patchText = sourcePatch.trim() === '' ? '[]\n' : sourcePatch
-    mutationDiff = { addedRows: [], overriddenRows: [], disabledRows: [], hermetic: false }
+    mutationDiff = { addedBundles: [], removedBundles: [], addedRows: [], overriddenRows: [], disabledRows: [], hermetic: false }
   } else {
     const appendedRows = parseYaml(evalRows(target).join('\n'))
     if (!Array.isArray(appendedRows)) {
@@ -220,23 +243,66 @@ function materializeSnapshot(
     patchText = stringifyYaml([...baseRows, ...appendedRows])
     mutationDiff = mutationDiffOf(baseRows, appendedRows)
   }
+  // A confirmed profile may boot an interactive app (the desktop profile boots
+  // the web app), which cannot answer one headless prompt. The isolated snapshot
+  // swaps interactive app bundles for the headless app and records the mutation;
+  // faithful mode intentionally keeps the profile verbatim.
+  let effectiveBundles = [...bundles]
+  let addedBundles: string[] = []
+  let removedBundles: string[] = []
+  if (mode === 'isolated-snapshot') {
+    removedBundles = effectiveBundles.filter((bundle) => INTERACTIVE_APP_BUNDLES.includes(bundle))
+    effectiveBundles = effectiveBundles.filter((bundle) => !INTERACTIVE_APP_BUNDLES.includes(bundle))
+    if (!effectiveBundles.includes(HEADLESS_BUNDLE)) {
+      effectiveBundles = [...effectiveBundles, HEADLESS_BUNDLE]
+      addedBundles = [HEADLESS_BUNDLE]
+    }
+  }
+  mutationDiff = { ...mutationDiff, addedBundles, removedBundles }
+  const sourceProfileObject = isObject(sourcePackage.dsh) && isObject(sourcePackage.dsh.profile) ? sourcePackage.dsh.profile : {}
   writeJson(join(profileDir, 'package.json'), {
     ...sourcePackage,
     name: 'dsh-profile-' + profileName,
     private: true,
-    dsh: { profile: { ...(isObject(sourcePackage.dsh) ? sourcePackage.dsh : {}), bundles } },
+    dsh: {
+      ...(isObject(sourcePackage.dsh) ? sourcePackage.dsh : {}),
+      profile: { ...sourceProfileObject, bundles: effectiveBundles },
+    },
   })
   writeFileSync(join(profileDir, 'cordis.yml'), sourceCordis)
   writeFileSync(join(profileDir, 'cordis.patch.yml'), patchText)
   let nodeModulesLinked = false
+  let nodeModulesCopied = false
   const sourceModules = join(sourceProfileDir, 'node_modules')
   const targetModules = join(profileDir, 'node_modules')
   if (existsSync(sourceModules) && !existsSync(targetModules)) {
-    try {
-      symlinkSync(sourceModules, targetModules, 'junction')
-      nodeModulesLinked = true
-    } catch {
-      nodeModulesLinked = false
+    if (copyLinkedModules) {
+      // Containers cannot follow a host junction. Copy the linked profile
+      // dependencies (dereferenced) so the snapshot is self-contained, and keep
+      // the pnpm store out of the copy because the dsh installation resolves
+      // its own packages.
+      try {
+        mkdirSync(targetModules, { recursive: true })
+        for (const entry of readdirSync(sourceModules)) {
+          if (entry === '.pnpm') continue
+          cpSync(join(sourceModules, entry), join(targetModules, entry), {
+            recursive: true,
+            force: true,
+            dereference: true,
+          })
+        }
+        nodeModulesCopied = true
+      } catch {
+        nodeModulesCopied = false
+      }
+    }
+    if (!nodeModulesCopied) {
+      try {
+        symlinkSync(sourceModules, targetModules, 'junction')
+        nodeModulesLinked = true
+      } catch {
+        nodeModulesLinked = false
+      }
     }
   }
   const resolvedBundles = resolveBundleVersions(sourceProfileDir, bundles)
@@ -245,11 +311,23 @@ function materializeSnapshot(
     mode,
     sourceProfileDir,
     bundles,
+    effectiveBundles,
     nodeModulesLinked,
+    nodeModulesCopied,
     excludedRows: [],
     mutationDiff,
     resolvedBundles,
-    digest: digestOf({ mode, bundles, cordis: sourceCordis, patch: patchText, resolvedBundles, mutationDiff, files }),
+    digest: digestOf({
+      mode,
+      bundles,
+      effectiveBundles,
+      cordis: sourceCordis,
+      patch: patchText,
+      resolvedBundles,
+      mutationDiff,
+      files,
+      nodeModulesCopied,
+    }),
     files,
   }
   return { dshHome, profileDir, profileName, snapshot }
@@ -293,7 +371,7 @@ function mutationDiffOf(baseRows: readonly unknown[], appendedRows: readonly unk
     else addedRows.push(row.id)
     if (row.disabled === true) disabledRows.push(row.id)
   }
-  return { addedRows, overriddenRows, disabledRows, hermetic: true }
+  return { addedBundles: [], removedBundles: [], addedRows, overriddenRows, disabledRows, hermetic: true }
 }
 
 function patchRowIds(rows: readonly unknown[]): string[] {

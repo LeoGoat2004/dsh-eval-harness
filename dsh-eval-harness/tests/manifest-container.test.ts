@@ -82,6 +82,12 @@ describe('container manifest fields', () => {
     expect(container?.verifierMounts?.[0]?.readOnly).toBe(true)
   })
 
+  it('parses verifier retries and rejects invalid values', () => {
+    expect(load([...base, '    verifyRetries: 2']).execution?.container?.verifyRetries).toBe(2)
+    expect(() => load([...base, '    verifyRetries: 9'])).toThrow('verifyRetries')
+    expect(() => load([...base, '    verifyRetries: 1.5'])).toThrow('verifyRetries')
+  })
+
   it('rejects malformed artifacts', () => {
     expect(() => load([...base, '    artifacts: [123]'])).toThrow('execution.container.artifacts')
   })

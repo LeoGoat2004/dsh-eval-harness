@@ -106,6 +106,11 @@ export interface BenchmarkManifest {
       readonly verifyEnv?: readonly { readonly name: string; readonly value: string }[]
       /** How to read grading output: junitxml (default), pytest text, or exit code only. */
       readonly verifyResult?: 'junitxml' | 'pytest-text' | 'exit-code'
+      /**
+       * Extra attempts when the verifier fails without a usable judgement and
+       * the log shows a transient/bootstrapping failure (default 1; max 3).
+       */
+      readonly verifyRetries?: number
     }
   }
   /** Requirements the environment must satisfy; the plugin only probes them. */
@@ -320,6 +325,9 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
       ...(container.verifyResult === undefined
         ? {}
         : { verifyResult: requireVerifyResult(container.verifyResult) }),
+      ...(container.verifyRetries === undefined
+        ? {}
+        : { verifyRetries: requireVerifyRetries(container.verifyRetries) }),
     },
   }
 }
@@ -356,6 +364,14 @@ function parseEnvironment(
 }
 
 const VERIFY_RESULTS = new Set<string>(['junitxml', 'pytest-text', 'exit-code'])
+
+/** Validate optional verifier retry count (0-3). */
+function requireVerifyRetries(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 3) {
+    throw new Error('manifest: execution.container.verifyRetries must be an integer between 0 and 3')
+  }
+  return value
+}
 
 /** Validate the verifier workspace mount policy. */
 function requireVerifyWorkspace(value: unknown): 'read-only' | 'read-write' {
