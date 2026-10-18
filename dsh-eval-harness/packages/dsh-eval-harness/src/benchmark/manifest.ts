@@ -62,8 +62,12 @@ export interface BenchmarkManifest {
   readonly execution?: {
     readonly kind: 'host' | 'container'
     readonly container?: {
-      /** Container image (templated per task); provided by the environment. */
+      /** Default container image (templated per task); provided by the environment. */
       readonly image: string
+      /** Optional agent-only image override; defaults to `image`. */
+      readonly agentImage?: string
+      /** Optional verifier-only image override; defaults to `image`. */
+      readonly verifierImage?: string
       /** Container path of the agent workspace. */
       readonly workspace: string
       /** Container path where the raw trace directory is mounted (default `/trace`). */
@@ -83,7 +87,14 @@ export interface BenchmarkManifest {
        * is disposable, so the agent container is never affected.
        */
       readonly verifyWorkspace?: 'read-only' | 'read-write'
-      /** Extra mounts (templated). `source` is a host path. */
+      /**
+       * Agent-only mounts (templated). Benchmark/grader mounts must not be listed
+       * here: the agent must not see the verifier's files.
+       */
+      readonly agentMounts?: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[]
+      /** Verifier-only mounts (templated); `mounts` is the backward-compatible alias. */
+      readonly verifierMounts?: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[]
+      /** Verifier mounts (legacy alias for `verifierMounts`). */
       readonly mounts?: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[]
       /** Container environment (templated; `{{env:NAME}}` reads the host env). */
       readonly env?: readonly { readonly name: string; readonly value: string }[]
@@ -266,16 +277,9 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
     return { kind: 'host' }
   }
   const container = requireObject(execution.container, 'execution.container')
-  const mounts = container.mounts === undefined
-    ? undefined
-    : requireArray(container.mounts, 'execution.container.mounts').map((item, index) => {
-        const mount = requireObject(item, 'execution.container.mounts[' + String(index) + ']')
-        return {
-          source: requireString(mount.source, 'execution.container.mounts[' + String(index) + '].source'),
-          target: requireString(mount.target, 'execution.container.mounts[' + String(index) + '].target'),
-          ...(mount.readOnly === true ? { readOnly: true } : {}),
-        }
-      })
+  const mounts = parseMounts(container.mounts, 'execution.container.mounts')
+  const agentMounts = parseMounts(container.agentMounts, 'execution.container.agentMounts')
+  const verifierMounts = parseMounts(container.verifierMounts, 'execution.container.verifierMounts')
   const env = parseEnvironment(container.env, 'execution.container.env')
   const verifyEnv = parseEnvironment(container.verifyEnv, 'execution.container.verifyEnv')
   const artifacts =
@@ -286,6 +290,12 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
     kind: 'container',
     container: {
       image: requireString(container.image, 'execution.container.image'),
+      ...(container.agentImage === undefined
+        ? {}
+        : { agentImage: requireString(container.agentImage, 'execution.container.agentImage') }),
+      ...(container.verifierImage === undefined
+        ? {}
+        : { verifierImage: requireString(container.verifierImage, 'execution.container.verifierImage') }),
       workspace: requireString(container.workspace, 'execution.container.workspace'),
       ...(container.tracePath === undefined
         ? {}
@@ -301,6 +311,8 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
         ? {}
         : { verifyWorkspace: requireVerifyWorkspace(container.verifyWorkspace) }),
       ...(mounts === undefined ? {} : { mounts }),
+      ...(agentMounts === undefined ? {} : { agentMounts }),
+      ...(verifierMounts === undefined ? {} : { verifierMounts }),
       ...(env === undefined ? {} : { env }),
       ...(verifyEnv === undefined ? {} : { verifyEnv }),
       agentCommand: requireStringArray(container.agentCommand, 'execution.container.agentCommand'),
@@ -310,6 +322,22 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
         : { verifyResult: requireVerifyResult(container.verifyResult) }),
     },
   }
+}
+
+/** Parse an optional list of `{source, target, readOnly}` mounts. */
+function parseMounts(
+  value: unknown,
+  field: string,
+): readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[] | undefined {
+  if (value === undefined) return undefined
+  return requireArray(value, field).map((item, index) => {
+    const mount = requireObject(item, field + '[' + String(index) + ']')
+    return {
+      source: requireString(mount.source, field + '[' + String(index) + '].source'),
+      target: requireString(mount.target, field + '[' + String(index) + '].target'),
+      ...(mount.readOnly === true ? { readOnly: true } : {}),
+    }
+  })
 }
 
 /** Parse an optional list of `{name, value}` environment entries. */

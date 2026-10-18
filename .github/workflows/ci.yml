@@ -29,3 +29,23 @@ jobs:
         run: npm run test:pipeline
       - name: Package smoke (tarball install, dashboard generation)
         run: npm run test:pack
+
+  docker-e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dsh-eval-harness
+    env:
+      DSH_EVAL_DOCKER_TESTS: '1'
+      DSH_EVAL_PIP_INDEX: 'https://pypi.org/simple'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19'
+      - name: Install workspace dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Container E2E (agent exit code, timeout, guard, grader isolation)
+        run: npm run test:pipeline

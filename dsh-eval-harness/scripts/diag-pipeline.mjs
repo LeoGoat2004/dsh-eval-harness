@@ -236,7 +236,9 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
     mkdirSync(fixtureDir, { recursive: true })
     writeFileSync(
       join(fixtureDir, 'Dockerfile'),
-      'FROM python:3.11-slim\nRUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple pytest\n',
+      'FROM python:3.11-slim\nRUN pip install --no-cache-dir -i ' +
+        (process.env.DSH_EVAL_PIP_INDEX ?? 'https://pypi.tuna.tsinghua.edu.cn/simple') +
+        ' pytest\n',
     )
     const built = spawnSync('docker', ['build', '--network', 'host', '-t', image, fixtureDir], {
       encoding: 'utf8',
@@ -317,6 +319,122 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
     check(result.verify.ok === true, 'container executor must grade a successful container episode: ' + JSON.stringify(result.verify.error ?? ''))
     check(result.agentExit === 0, 'container executor must report the agent exit marker')
     check(result.verifyExit === 0, 'container executor must report the grading exit marker')
+    check(
+      result.graderVisibility.exposedToAgent.length === 0,
+      'default mounts must keep the grader invisible to the agent: ' +
+        JSON.stringify(result.graderVisibility.exposedToAgent),
+    )
+    check(
+      result.graderVisibility.verifierOnlyMounts.includes('/task'),
+      'verifier-only mounts must include the benchmark task directory',
+    )
+    check(result.graderVisibility.sharedImage === true, 'the default single image must be recorded as shared')
+
+    // Regression: the wrapper shell used to swallow the agent's real status.
+    // A non-zero agent command must never reach grading, and must be reported.
+    const variant = async (name, agentCommand, options = {}) => {
+      const dir = join(workDir, 'container-' + name)
+      mkdirSync(dir, { recursive: true })
+      const manifestPath = join(dir, 'manifest.yml')
+      writeFileSync(
+        manifestPath,
+        [
+          'schema: 1',
+          'name: container-' + name,
+          'tasks:',
+          '  discovery: directory',
+          '  root: "{{language}}"',
+          '  exclude: []',
+          'prompt:',
+          '  files:',
+          '    - path: prompt.md',
+          '  template: "{{prompt}}"',
+          'environment:',
+          '  requirements:',
+          '    - id: docker',
+          '      kind: container-runtime',
+          '      command: docker',
+          '      args: [--version]',
+          '      reason: container execution needs a container runtime',
+          'execution:',
+          '  kind: container',
+          '  container:',
+          '    image: "' + image + '"',
+          '    workspace: /workspace',
+          ...(options.agentSeesTask
+            ? [
+                '    agentMounts:',
+                '      - source: "{{taskDir}}"',
+                '        target: /task',
+                '        readOnly: true',
+              ]
+            : []),
+          '    mounts:',
+          '      - source: "{{taskDir}}"',
+          '        target: /task',
+          '        readOnly: true',
+          '    agentCommand: ' + JSON.stringify(agentCommand),
+          '    verifyCommand: [python, -m, pytest, /task/tests/test_out.py, --junitxml=/dsh-verify/junit.xml, -q]',
+          '',
+        ].join('\n'),
+      )
+      writeFileSync(join(dir, 'prompt.md'), 'write out.py')
+      const loaded = loadManifest(manifestPath)
+      return runContainerEpisode({
+        manifest: loaded.manifest,
+        task: fixtureTask,
+        taskDir: join(dir, 'task-artifacts'),
+        taskSourceDir: fixtureTask.exerciseDir,
+        workspaceDir: join(dir, 'workspace'),
+        traceDir: join(dir, 'trace'),
+        verifyDir: join(dir, 'verify'),
+        promptFile: join(dir, 'prompt.md'),
+        timeoutMs: options.timeoutMs ?? 60_000,
+        guard: options.guard ?? { maxSteps: 50, maxIdenticalToolCalls: 3 },
+        logPath: join(dir, 'container.log'),
+      })
+    }
+
+    const exit17 = await variant('exit17', ['bash', '-lc', 'exit 17'])
+    check(exit17.agentExit === 17, 'agent exit 17 must be preserved as the agent exit')
+    check(exit17.exitCode === 17, 'agent exit 17 must be reported as the episode exit code')
+    check(exit17.verify.ok === false, 'a failed agent must not receive a passing grade')
+    check(
+      (exit17.verify.error ?? '').includes('skipped'),
+      'grading must be skipped when the agent command fails',
+    )
+    check(!existsSync(join(workDir, 'container-exit17', 'verify', 'junit.xml')), 'failed agent must not run the verifier')
+
+    const timedOut = await variant('timeout', ['bash', '-lc', 'sleep 10'], { timeoutMs: 700 })
+    check(timedOut.timedOut === true, 'container episode must honour the timeout')
+    check(timedOut.verify.ok === false, 'a timed-out agent must not receive a passing grade')
+
+    const guarded = await variant(
+      'guard',
+      ['bash', '-lc', 'mkdir -p /trace/g && printf \'{"type":"step/start","step":2}\' > /trace/g/session.v4.jsonl && sleep 10'],
+      { guard: { maxSteps: 1, maxIdenticalToolCalls: 10 }, timeoutMs: 20_000 },
+    )
+    check(guarded.guard !== null, 'container guard must trip on the mounted trace')
+    check(guarded.verify.ok === false, 'a guard-stopped agent must not receive a passing grade')
+
+    // The agent must not be able to read the benchmark's tests by default.
+    const hiddenGrader = await variant(
+      'grader-hidden',
+      ['bash', '-lc', 'test -e /task/tests/test_out.py && exit 7 || true'],
+    )
+    check(hiddenGrader.agentExit === 0, 'agent must not see the verifier-only task directory')
+
+    // If an adapter exposes the grader to the agent, the audit must catch it.
+    const exposedGrader = await variant(
+      'grader-exposed',
+      ['bash', '-lc', 'test -e /task/tests/test_out.py && exit 7 || true'],
+      { agentSeesTask: true },
+    )
+    check(exposedGrader.agentExit === 7, 'exposed grader is expected to be readable in this negative case')
+    check(
+      exposedGrader.graderVisibility.exposedToAgent.includes('/task'),
+      'grader visibility audit must report the exposed verifier mount',
+    )
   }
 }
 

@@ -25,7 +25,21 @@ export interface ContainerEpisodeResult {
   readonly verifyExit: number | null
   /** Set when the loop guard stopped the agent container before the timeout. */
   readonly guard: LoopGuardTrip | null
+  /** Audit of which verifier-only paths the agent could also see. */
+  readonly graderVisibility: GraderVisibility
   readonly verify: VerifyResult
+}
+
+/** Records what the agent container can see relative to the verifier's files. */
+export interface GraderVisibility {
+  /** Mount targets the agent container received. */
+  readonly agentMounts: readonly string[]
+  /** Mount targets only the verifier received (the grader side). */
+  readonly verifierOnlyMounts: readonly string[]
+  /** Verifier mount targets reachable from an agent mount; should stay empty. */
+  readonly exposedToAgent: readonly string[]
+  /** True when agent and verifier share one image (baked-in graders are not excluded). */
+  readonly sharedImage: boolean
 }
 
 /** Standard container paths the executor always provides. */
@@ -183,24 +197,48 @@ export async function runContainerEpisode(options: {
   })
   const render = (value: string): string => renderContainerValue(value, vars, runEnv)
   const tracePath = container.tracePath ?? '/trace'
-  const image = render(container.image)
+  const agentImage = render(container.agentImage ?? container.image)
+  const verifierImage = render(container.verifierImage ?? container.image)
   const baseName = options.containerName ?? 'dsh-eval-' + randomUUID()
   const agentName = baseName + '-agent'
   const verifierName = baseName + '-verify'
   const started = Date.now()
+  const renderMountSpecs = (
+    specs: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[],
+  ): { args: string[]; targets: string[] } => {
+    const args: string[] = []
+    const targets: string[] = []
+    for (const mount of specs) {
+      const target = render(mount.target)
+      targets.push(target)
+      args.push('-v', render(mount.source) + ':' + target + (mount.readOnly === true ? ':ro' : ''))
+    }
+    return { args, targets }
+  }
+  const agentExtraMounts = renderMountSpecs(container.agentMounts ?? [])
+  const verifierOnlyMounts = renderMountSpecs(container.verifierMounts ?? container.mounts ?? [])
 
   const renderCommand = (command: readonly string[]): string => command.map((token) => shellQuote(render(token))).join(' ')
   const agentScript = join(options.verifyDir, 'agent.sh')
-  writeFileSync(agentScript, ['#!/bin/bash', 'set +e', renderCommand(container.agentCommand), 'echo AGENT_EXIT=$?', ''].join('\n'))
-  const benchmarkMounts: string[] = []
-  for (const mount of container.mounts ?? []) {
-    benchmarkMounts.push('-v', render(mount.source) + ':' + render(mount.target) + (mount.readOnly === true ? ':ro' : ''))
-  }
+  writeFileSync(
+    agentScript,
+    [
+      '#!/bin/bash',
+      'set +e',
+      renderCommand(container.agentCommand),
+      // Preserve the agent's status: without the explicit exit, the shell would
+      // return 0 because the last statement (`echo`) succeeded.
+      'AGENT_EXIT=$?',
+      'echo AGENT_EXIT=$AGENT_EXIT',
+      'exit $AGENT_EXIT',
+      '',
+    ].join('\n'),
+  )
   const agentMounts: string[] = [
     '-v', options.traceDir + ':' + tracePath,
     '-v', options.promptFile + ':' + CONTAINER_PATHS.promptFile + ':ro',
     '-v', agentScript + ':' + CONTAINER_PATHS.agentScript + ':ro',
-    ...benchmarkMounts,
+    ...agentExtraMounts.args,
   ]
   if (container.mountWorkspace !== false) agentMounts.push('-v', options.workspaceDir + ':' + container.workspace)
   if (container.mountDshHome === true) {
@@ -211,6 +249,26 @@ export async function runContainerEpisode(options: {
   for (const entry of container.env ?? []) {
     agentEnv.push('-e', render(entry.name) + '=' + render(entry.value))
   }
+  // Audit: a verifier-only path is exposed when the agent holds an ancestor
+  // mount of it. The shared workspace is expected and excluded from the check.
+  const agentVisibleTargets = [
+    ...agentExtraMounts.targets,
+    ...(container.mountWorkspace !== false ? [container.workspace] : []),
+    ...(container.mountDshHome === true ? ['/dsh-home'] : []),
+  ]
+  const exposedToAgent = verifierOnlyMounts.targets.filter((target) => {
+    if (target === container.workspace) return false
+    return agentVisibleTargets.some((agentTarget) => {
+      const prefix = agentTarget === '/' ? '/' : agentTarget.replace(/\/+$/u, '') + '/'
+      return target === agentTarget || target.startsWith(prefix)
+    })
+  })
+  const graderVisibility: GraderVisibility = {
+    agentMounts: agentVisibleTargets,
+    verifierOnlyMounts: verifierOnlyMounts.targets,
+    exposedToAgent,
+    sharedImage: agentImage === verifierImage,
+  }
 
   const agent = await runDockerPhase({
     args: [
@@ -219,7 +277,7 @@ export async function runContainerEpisode(options: {
       ...agentMounts,
       ...agentEnv,
       '-w', container.workspace,
-      image,
+      agentImage,
       'bash', CONTAINER_PATHS.agentScript,
     ],
     timeoutMs: options.timeoutMs,
@@ -228,8 +286,10 @@ export async function runContainerEpisode(options: {
     containerName: agentName,
   })
   const agentLog = agent.log
+  // The marker is authoritative: the container's own exit code only proves that
+  // the wrapper shell finished.
   const agentExit = marker(agentLog, 'AGENT_EXIT') ?? agent.exitCode
-  const agentOk = agent.exitCode === 0 && !agent.timedOut && agent.guard === null
+  const agentOk = agentExit === 0 && !agent.timedOut && agent.guard === null
 
   let artifactError: string | undefined
   const artifactMounts: string[] = []
@@ -268,13 +328,14 @@ export async function runContainerEpisode(options: {
     const log = agentLog
     writeFileSync(options.logPath, log)
     return {
-      exitCode: agent.exitCode,
+      exitCode: agentExit,
       timedOut: agent.timedOut,
       durationMs: Date.now() - started,
       log,
       agentExit,
       verifyExit: null,
       guard: agent.guard,
+      graderVisibility,
       verify: {
         ok: false,
         passed: 0,
@@ -289,13 +350,14 @@ export async function runContainerEpisode(options: {
     const log = agentLog
     writeFileSync(options.logPath, log)
     return {
-      exitCode: agent.exitCode,
+      exitCode: agentExit,
       timedOut: false,
       durationMs: Date.now() - started,
       log,
       agentExit,
       verifyExit: null,
       guard: null,
+      graderVisibility,
       verify: { ok: false, passed: 0, total: 0, checks: [], logPath: options.verifyDir, error: artifactError },
     }
   }
@@ -314,12 +376,12 @@ export async function runContainerEpisode(options: {
       'run',
       '--name', verifierName,
       ...artifactMounts,
-      ...benchmarkMounts,
+      ...verifierOnlyMounts.args,
       ...verifyEnv,
       '-v', options.verifyDir + ':' + CONTAINER_PATHS.verifyDir,
       '-v', verifyScript + ':' + CONTAINER_PATHS.verifyScript + ':ro',
       '-w', container.workspace,
-      image,
+      verifierImage,
       'bash', CONTAINER_PATHS.verifyScript,
     ],
     timeoutMs: Math.min(options.timeoutMs, 120_000),
@@ -330,13 +392,14 @@ export async function runContainerEpisode(options: {
   const log = agentLog + verifier.log
   writeFileSync(options.logPath, log)
   return {
-    exitCode: agent.exitCode,
+    exitCode: agentExit,
     timedOut: false,
     durationMs: Date.now() - started,
     log,
     agentExit,
     verifyExit,
     guard: null,
+    graderVisibility,
     verify:
       verifier.timedOut
         ? { ok: false, passed: 0, total: 0, checks: [], logPath: options.verifyDir, error: 'verifier: timed out' }

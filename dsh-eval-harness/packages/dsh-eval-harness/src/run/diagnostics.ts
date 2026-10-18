@@ -62,6 +62,16 @@ export function deriveDiagnostics(
       })
     }
 
+    if (task.graderVisibility !== undefined && task.graderVisibility.exposedToAgent.length > 0) {
+      diagnostics.push({
+        kind: 'grader-visible-to-agent',
+        layer: 'adapter',
+        confidence: 'confirmed',
+        note: 'agent 容器可见判据路径：' + task.graderVisibility.exposedToAgent.join(', '),
+        evidence: evidence('grader-visible-to-agent', { artifact: 'agent' }),
+      })
+    }
+
     switch (task.executionStatus) {
       case 'timeout':
         diagnostics.push({

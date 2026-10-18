@@ -62,6 +62,26 @@ describe('container manifest fields', () => {
     expect(container?.verifyEnv?.[0]?.name).toBe('TEST_DIR')
   })
 
+  it('parses separate images and agent/verifier mounts', () => {
+    const manifest = load([
+      ...base,
+      '    agentImage: "agent:1"',
+      '    verifierImage: "verifier:1"',
+      '    agentMounts:',
+      '      - source: /agent-data',
+      '        target: /agent',
+      '    verifierMounts:',
+      '      - source: /grader',
+      '        target: /grader',
+      '        readOnly: true',
+    ])
+    const container = manifest.execution?.container
+    expect(container?.agentImage).toBe('agent:1')
+    expect(container?.verifierImage).toBe('verifier:1')
+    expect(container?.agentMounts?.[0]?.target).toBe('/agent')
+    expect(container?.verifierMounts?.[0]?.readOnly).toBe(true)
+  })
+
   it('rejects malformed artifacts', () => {
     expect(() => load([...base, '    artifacts: [123]'])).toThrow('execution.container.artifacts')
   })

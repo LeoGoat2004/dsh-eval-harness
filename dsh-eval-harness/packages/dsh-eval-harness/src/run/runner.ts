@@ -23,6 +23,7 @@ import {
   dockerRuntimeCheck,
   renderContainerValue,
   runContainerEpisode,
+  type GraderVisibility,
 } from './container.ts'
 import { probeRequirements, type EnvironmentProbe, type EnvironmentRequirement } from './environment.ts'
 import { classifyTaskStatus, type ExecutionStatus, type TaskOutcome } from './status.ts'
@@ -81,6 +82,8 @@ export interface TaskSummary {
   readonly inputDigest?: string
   /** Set when the loop guard stopped this episode. */
   readonly guard: LoopGuardTrip | null
+  /** Container-only audit of what the agent could see of the verifier. */
+  readonly graderVisibility?: GraderVisibility
   readonly error?: string
 }
 
@@ -257,6 +260,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       durationMs: number
       guard: { readonly reason: string } | null
       verify: VerifyResult
+      graderVisibility?: GraderVisibility
     }
     if (containerExecution !== null) {
       if (containerExecution.mountWorkspace !== false) prepareWorkspace(task, workspaceDir)
@@ -300,6 +304,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
         durationMs: containerEpisode.durationMs,
         guard: containerEpisode.guard,
         verify: containerEpisode.verify,
+        graderVisibility: containerEpisode.graderVisibility,
       }
     } else {
       prepareWorkspace(task, workspaceDir)
@@ -380,6 +385,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       observedModel,
       homeLeaks,
       guard: episode.guard,
+      ...(episode.graderVisibility === undefined ? {} : { graderVisibility: episode.graderVisibility }),
       inputDigest,
       ...(status.error === undefined ? {} : { error: status.error }),
     }
@@ -395,6 +401,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       observedModel: summary.observedModel,
       homeLeaks: summary.homeLeaks,
       guard: summary.guard,
+      ...(summary.graderVisibility === undefined ? {} : { graderVisibility: summary.graderVisibility }),
       ...(summary.inputDigest === undefined ? {} : { inputDigest: summary.inputDigest }),
       checks: { passed: verify.passed, total: verify.total, ok: verify.ok },
       ...(summary.error === undefined ? {} : { error: summary.error }),
@@ -465,6 +472,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       durationMs: summary.durationMs,
       metrics: summary.metrics,
       guard: summary.guard,
+      ...(summary.graderVisibility === undefined ? {} : { graderVisibility: summary.graderVisibility }),
       ...(summary.inputDigest === undefined ? {} : { inputDigest: summary.inputDigest }),
       checks: summary.verify === null ? null : { passed: summary.verify.passed, total: summary.verify.total, ok: summary.verify.ok },
       ...(summary.error === undefined ? {} : { error: summary.error }),
