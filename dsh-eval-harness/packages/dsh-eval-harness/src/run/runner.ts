@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { loadBenchmarkFromManifest } from '../benchmark/interpreter.ts'
 import { loadManifest } from '../benchmark/manifest.ts'
 import {
-  buildPrompt,
   findSessionLog,
   materializeProfile,
   prepareWorkspace,
@@ -21,6 +20,7 @@ import {
   runContainerEpisode,
 } from './container.ts'
 import { probeRequirements, type EnvironmentProbe, type EnvironmentRequirement } from './environment.ts'
+import { classifyTaskStatus, type ExecutionStatus, type TaskOutcome } from './status.ts'
 import type { ModelTarget } from '../model/target.ts'
 import type { LoopGuardLimits, LoopGuardTrip } from './guard.ts'
 import { runManifestVerifier, type VerifyResult } from './verify.ts'
@@ -51,7 +51,10 @@ export interface RunSpec {
 export interface TaskSummary {
   readonly id: string
   readonly dir: string
-  readonly status: 'passed' | 'failed' | 'error'
+  /** How the episode ended; never conflated with the benchmark outcome. */
+  readonly executionStatus: ExecutionStatus
+  /** Benchmark outcome; `ungraded` when the episode was not trustworthy. */
+  readonly taskOutcome: TaskOutcome
   readonly exitCode: number | null
   readonly timedOut: boolean
   readonly durationMs: number
@@ -77,7 +80,9 @@ export interface RunSummary {
     readonly tasks: number
     readonly passed: number
     readonly failed: number
-    readonly errored: number
+    readonly ungraded: number
+    /** Tasks whose episode did not complete cleanly (any executionStatus but completed). */
+    readonly executionErrors: number
     readonly durationMs: number
     readonly totalTokens: number
     readonly toolCalls: number
@@ -179,8 +184,9 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     const workspaceDir = join(taskDir, 'workspace')
     const traceDir = join(taskDir, 'trace')
     mkdirSync(taskDir, { recursive: true })
-    const prompt = buildPrompt(task)
-    writeFileSync(join(taskDir, 'prompt.md'), prompt + '\n')
+    // The manifest owns prompt assembly; the executor passes it through untouched.
+    const prompt = task.prompt
+    writeFileSync(join(taskDir, 'prompt.md'), prompt)
     mkdirSync(join(taskDir, 'agent'), { recursive: true })
     let episode: {
       exitCode: number | null
@@ -283,16 +289,22 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     const verify = episode.verify
     writeJson(join(taskDir, 'checks.json'), verify)
 
-    const status: TaskSummary['status'] =
-      sessionLog === null || traceError !== undefined || episode.guard !== null
-        ? 'error'
-        : verify.ok
-          ? 'passed'
-          : 'failed'
+    const status = classifyTaskStatus({
+      started: true,
+      timedOut: episode.timedOut,
+      guard: episode.guard,
+      exitCode: episode.exitCode,
+      traceError:
+        sessionLog === null
+          ? traceError ?? 'trace: no session log found'
+          : traceError,
+      verify,
+    })
     const summary: TaskSummary = {
       id: task.id,
       dir: taskDir,
-      status,
+      executionStatus: status.executionStatus,
+      taskOutcome: status.taskOutcome,
       exitCode: episode.exitCode,
       timedOut: episode.timedOut,
       durationMs: episode.durationMs,
@@ -302,12 +314,13 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       observedModel,
       homeLeaks,
       guard: episode.guard,
-      ...(traceError === undefined ? {} : { error: traceError }),
+      ...(status.error === undefined ? {} : { error: status.error }),
     }
     summaries.push(summary)
     writeJson(join(taskDir, 'task.json'), {
       id: summary.id,
-      status: summary.status,
+      executionStatus: summary.executionStatus,
+      taskOutcome: summary.taskOutcome,
       exitCode: summary.exitCode,
       timedOut: summary.timedOut,
       durationMs: summary.durationMs,
@@ -323,7 +336,15 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   const totals = summarize(summaries, Date.now() - startedAt)
   writeFileSync(
     join(runDir, 'tasks.jsonl'),
-    summaries.map((summary) => JSON.stringify({ id: summary.id, status: summary.status })).join('\n') + '\n',
+    summaries
+      .map((summary) =>
+        JSON.stringify({
+          id: summary.id,
+          executionStatus: summary.executionStatus,
+          taskOutcome: summary.taskOutcome,
+        }),
+      )
+      .join('\n') + '\n',
   )
   const reportPath = join(runDir, 'report.json')
   writeJson(reportPath, {
@@ -343,11 +364,13 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     isolation: summarizeIsolation(summaries),
     tasks: summaries.map((summary) => ({
       id: summary.id,
-      status: summary.status,
+      executionStatus: summary.executionStatus,
+      taskOutcome: summary.taskOutcome,
       durationMs: summary.durationMs,
       metrics: summary.metrics,
       guard: summary.guard,
       checks: summary.verify === null ? null : { passed: summary.verify.passed, total: summary.verify.total, ok: summary.verify.ok },
+      ...(summary.error === undefined ? {} : { error: summary.error }),
     })),
     totals,
   })
@@ -363,17 +386,19 @@ function createRunId(spec: RunSpec, benchmarkName: string): string {
 function summarize(summaries: readonly TaskSummary[], durationMs: number): RunSummary['totals'] {
   let passed = 0
   let failed = 0
-  let errored = 0
+  let ungraded = 0
+  let executionErrors = 0
   let totalTokens = 0
   let toolCalls = 0
   for (const summary of summaries) {
-    if (summary.status === 'passed') passed += 1
-    else if (summary.status === 'failed') failed += 1
-    else errored += 1
+    if (summary.taskOutcome === 'passed') passed += 1
+    else if (summary.taskOutcome === 'failed') failed += 1
+    else ungraded += 1
+    if (summary.executionStatus !== 'completed') executionErrors += 1
     totalTokens += summary.metrics?.totalTokens ?? 0
     toolCalls += summary.metrics?.toolCalls ?? 0
   }
-  return { tasks: summaries.length, passed, failed, errored, durationMs, totalTokens, toolCalls }
+  return { tasks: summaries.length, passed, failed, ungraded, executionErrors, durationMs, totalTokens, toolCalls }
 }
 
 /** One task's isolation outcome. */

@@ -150,26 +150,6 @@ export function prepareWorkspace(task: BenchmarkTask, workspaceDir: string): voi
 }
 
 /**
- * Build the prompt handed to the agent.
- * @param task - the task to describe.
- * @returns one self-contained prompt.
- */
-export function buildPrompt(task: BenchmarkTask): string {
-  return [
-    'You are working in a Python repository that contains one programming exercise.',
-    '',
-    task.prompt,
-    '',
-    '## Your task',
-    '',
-    'Implement the exercise in: ' + task.solutionFiles.join(', ') + '.',
-    'Work only inside the current directory. The grading tests are not present in this',
-    'workspace and must not be recreated; implement the public interface the exercise',
-    'describes. You may run `python -m pytest` on tests you write yourself.',
-  ].join('\n')
-}
-
-/**
  * Spawn one headless `dsh` episode and enforce a hard timeout plus the loop
  * guard. The guard watches the durable trace while the child runs, so a model
  * that repeats one tool call forever is stopped early instead of burning the

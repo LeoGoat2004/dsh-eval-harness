@@ -64,7 +64,10 @@ export interface TaskChecks {
 
 export interface TaskData {
   readonly id: string
+  /** Derived display status; see executionStatus/taskOutcome for the truth. */
   readonly status: 'passed' | 'failed' | 'error'
+  readonly executionStatus?: string
+  readonly taskOutcome?: 'passed' | 'failed' | 'ungraded'
   readonly durationMs: number
   readonly exitCode: number | null
   readonly timedOut: boolean
@@ -132,7 +135,10 @@ export interface RunTotals {
   readonly tasks: number
   readonly passed: number
   readonly failed: number
-  readonly errored: number
+  /** Tasks not graded because the episode was untrustworthy. */
+  readonly ungraded: number
+  /** Tasks whose episode did not complete cleanly. */
+  readonly executionErrors: number
   readonly durationMs: number
   readonly totalTokens: number
   readonly toolCalls: number

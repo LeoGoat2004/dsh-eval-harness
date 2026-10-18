@@ -6,7 +6,6 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { builtinManifestPath } from '../packages/dsh-eval-harness/lib/benchmark/manifest.js'
 import { BUNDLE_DIR, ROWS } from './registry.mjs'
 
 const entry = join(BUNDLE_DIR, 'lib', 'index.js')
@@ -44,6 +43,40 @@ await new Promise((resolve) => setTimeout(resolve, 50))
 const names = ctx.tools.registered.map((definition) => definition.name)
 const expectedNames = new Set(ROWS.map((row) => row.plugin))
 const failures = []
+
+// Hermetic fixture: the mount contract must not depend on the host having a
+// benchmark checkout, Python or Docker. It only requires Node itself.
+const fixtureRoot = mkdtempSync(join(tmpdir(), 'dsh-eval-mount-'))
+const fixtureManifest = join(fixtureRoot, 'manifest.yml')
+writeFileSync(
+  fixtureManifest,
+  [
+    'schema: 1',
+    'name: mount-fixture',
+    'tasks:',
+    '  discovery: directory',
+    '  root: "{{language}}"',
+    '  exclude: []',
+    'prompt:',
+    '  files:',
+    '    - path: prompt.md',
+    '  template: "{{prompt}}"',
+    'verify:',
+    '  command: [node, -e, "process.exit(0)"]',
+    '  result: junitxml',
+    'environment:',
+    '  requirements:',
+    '    - id: node',
+    '      command: node',
+    '      args: [--version]',
+    '      reason: hermetic self-check needs Node',
+    '    - id: node-eval',
+    '      command: node',
+    '      args: [-e, "process.exit(0)"]',
+    '      reason: second requirement keeps the probe list real',
+    '',
+  ].join('\n'),
+)
 if (!expectedNames.has(plugin.name)) failures.push('plugin name is not a registered row plugin')
 for (const tool of ['eval_status', 'eval_preflight', 'eval_manifest', 'eval_run']) {
   if (!names.includes(tool)) failures.push('apply() did not register ' + tool)
@@ -68,9 +101,8 @@ const manifestTool = ctx.tools.registered.find((candidate) => candidate.name ===
 if (manifestTool === undefined) {
   failures.push('eval_manifest definition is missing')
 } else {
-  const manifestPath = builtinManifestPath('aider-polyglot')
-  const value = await manifestTool.execute({ manifestPath, language: 'python' }, {})
-  if (value?.valid !== true) failures.push('eval_manifest must validate the built-in preset')
+  const value = await manifestTool.execute({ manifestPath: fixtureManifest, language: 'node' }, {})
+  if (value?.valid !== true) failures.push('eval_manifest must validate a manifest')
   if ((value?.requirements ?? []).length === 0) failures.push('eval_manifest must report environment requirements')
   let rejected = false
   try {
@@ -96,10 +128,10 @@ if (runTool === undefined) {
         dshVersion: 'self-check',
         provider: 'siliconflow',
         model: 'Qwen/Qwen3-8B',
-        manifestPath: builtinManifestPath('aider-polyglot'),
-        language: 'python',
+        manifestPath: fixtureManifest,
+        language: 'node',
         revision: 'self-check',
-        tasks: ['transpose'],
+        tasks: ['fixture-task'],
         benchmarkRoot: '.',
         timeoutMs: 1000,
         maxSteps: 10,
@@ -142,10 +174,10 @@ if (preflight === undefined) {
     dshVersion: 'self-check',
     provider: 'siliconflow',
     model: 'Qwen/Qwen3-8B',
-    manifestPath: builtinManifestPath('aider-polyglot'),
-    language: 'python',
+    manifestPath: fixtureManifest,
+    language: 'node',
     revision: 'self-check',
-    tasks: ['transpose'],
+    tasks: ['fixture-task'],
   }
   try {
     const value = await preflight.execute(planArgs, {})
@@ -157,7 +189,7 @@ if (preflight === undefined) {
       failures.push('eval_preflight must resolve the model from the profile')
     }
     if (!Array.isArray(value?.requirements) || value.requirements.length < 2) {
-      failures.push('eval_preflight must report the declared python/pytest requirements')
+      failures.push('eval_preflight must report the declared fixture requirements')
     }
     if (!Array.isArray(value?.missing) || value.missing.length !== 0) {
       failures.push('eval_preflight must report no missing requirements on this host')
@@ -192,8 +224,10 @@ if (preflight === undefined) {
 }
 
 if (failures.length > 0) {
+  rmSync(fixtureRoot, { recursive: true, force: true })
   console.error('MOUNT CONTRACT FAIL')
   for (const failure of failures) console.error('  - ' + failure)
   process.exit(1)
 }
+rmSync(fixtureRoot, { recursive: true, force: true })
 console.log('MOUNT CONTRACT OK (' + names.join(', ') + ')')

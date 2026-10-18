@@ -18,6 +18,8 @@ export interface VerifyResult {
   readonly ok: boolean
   readonly passed: number
   readonly total: number
+  /** Test cases reported as skipped; they are never counted as passes. */
+  readonly skipped?: number
   readonly checks: readonly Check[]
   /** Absolute path of the raw pytest log. */
   readonly logPath: string
@@ -75,6 +77,10 @@ export function runManifestVerifier(options: {
     windowsHide: true,
   })
   writeFileSync(logPath, (result.stdout ?? '') + (result.stderr ?? ''))
+  const verifierTimedOut = result.error !== undefined && String(result.error).includes('ETIMEDOUT')
+  if (verifierTimedOut) {
+    return { ok: false, passed: 0, total: 0, checks: [], logPath, error: 'verifier: timed out' }
+  }
   let checks: Check[] = []
   try {
     checks = parseJunit(readFileSync(junitPath, 'utf8'))
@@ -89,10 +95,26 @@ export function runManifestVerifier(options: {
     }
   }
   const passed = checks.filter((check) => check.pass).length
+  const skipped = checks.filter((check) => check.skipped).length
+  // pytest exits non-zero for failing tests, so the exit code is not success
+  // criteria on its own; but a non-zero exit with an all-pass report is an
+  // inconsistency worth refusing to grade.
+  if (result.status !== 0 && passed === checks.length && checks.length > 0) {
+    return {
+      ok: false,
+      passed,
+      total: checks.length,
+      skipped,
+      checks: [...checks],
+      logPath,
+      error: 'verifier: exit code ' + String(result.status) + ' despite an all-pass report',
+    }
+  }
   return {
     ok: checks.length > 0 && passed === checks.length,
     passed,
     total: checks.length,
+    skipped,
     checks,
     logPath,
   }
@@ -144,10 +166,12 @@ export function runVerifier(options: {
     }
   }
   const passed = checks.filter((check) => check.pass).length
+  const skipped = checks.filter((check) => check.skipped).length
   return {
     ok: checks.length > 0 && passed === checks.length,
     passed,
     total: checks.length,
+    skipped,
     checks,
     logPath,
   }
@@ -172,7 +196,8 @@ export function parseJunit(xml: string): Check[] {
     const skipped = /<skipped\b/u.test(body)
     checks.push({
       id: className === '' ? name : className + '::' + name,
-      pass: !failed,
+      // A skipped test proves nothing: it must never count as a pass.
+      pass: !failed && !skipped,
       skipped,
     })
   }

@@ -1,4 +1,4 @@
-﻿// Pipeline self-check without model calls.
+// Pipeline self-check without model calls.
 //
 // Runs the real evaluation pipeline with a stub `dsh` launcher that exits
 // immediately, so preflight, environment recording, artifact layout and the
@@ -75,7 +75,11 @@ check(existsSync(preflightPath), 'preflight.json is missing')
 check(existsSync(runPath), 'run.json is missing')
 check(existsSync(reportPath), 'report.json is missing')
 check(summary.tasks.length === 1, 'expected exactly one task result')
-check(summary.tasks[0]?.status === 'error', 'stub launcher must produce an errored task')
+check(
+  summary.tasks[0]?.executionStatus === 'agent_crashed',
+  'stub launcher must produce an agent_crashed execution status',
+)
+check(summary.tasks[0]?.taskOutcome === 'ungraded', 'crashed episodes must not claim a benchmark outcome')
 
 if (existsSync(preflightPath) && existsSync(runPath)) {
   const preflight = JSON.parse(readFileSync(preflightPath, 'utf8'))

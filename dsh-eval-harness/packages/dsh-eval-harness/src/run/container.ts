@@ -254,7 +254,17 @@ function readVerifier(
   try {
     const checks = parseJunit(readFileSync(junitPath, 'utf8'))
     const passed = checks.filter((check) => check.pass).length
-    return { ok: checks.length > 0 && passed === checks.length, passed, total: checks.length, checks, logPath: junitPath }
+    const skipped = checks.filter((check) => check.skipped).length
+    // The grading process must also have exited cleanly; a skipped test never
+    // counts as a pass.
+    return {
+      ok: verifyExit === 0 && checks.length > 0 && passed === checks.length,
+      passed,
+      total: checks.length,
+      skipped,
+      checks,
+      logPath: junitPath,
+    }
   } catch (error) {
     return { ok: false, passed: 0, total: 0, checks: [], logPath: junitPath, error: 'verifier: unreadable junit report (' + String(error) + ')' }
   }

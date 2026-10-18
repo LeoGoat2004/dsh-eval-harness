@@ -229,7 +229,7 @@ function validateManifest(value: unknown, path: string): BenchmarkManifest {
       discovery: 'directory',
       root: tasksRoot,
       ...(meta === undefined ? {} : { meta }),
-      exclude: requireStringArray(tasks.exclude, 'tasks.exclude'),
+      exclude: requireOptionalStringArray(tasks.exclude, 'tasks.exclude'),
     },
     prompt: { files: promptFiles, template },
     ...(verify === undefined ? {} : { verify }),
@@ -359,4 +359,10 @@ function requireString(value: unknown, field: string): string {
 
 function requireStringArray(value: unknown, field: string): readonly string[] {
   return requireArray(value, field).map((item, index) => requireString(item, field + '[' + String(index) + ']'))
+}
+
+/** Unlike requireStringArray, an empty list is valid (e.g. no workspace excludes). */
+function requireOptionalStringArray(value: unknown, field: string): readonly string[] {
+  if (!Array.isArray(value)) throw new Error('manifest: ' + field + ' must be an array')
+  return value.map((item, index) => requireString(item, field + '[' + String(index) + ']'))
 }

@@ -14,7 +14,7 @@
     "postinstall": "npm run build",
     "typecheck": "node scripts/typecheck.mjs",
     "build": "node scripts/build.mjs",
-    "test": "npm run test:naming && npm run test:import && npm run test:mount",
+    "test": "npm run test:naming && npm run test:import && npm run test:mount && npm run test:unit",
     "test:naming": "node scripts/diag-naming.mjs",
     "test:import": "node scripts/diag-import.mjs",
     "test:mount": "node scripts/diag-mount.mjs",
@@ -24,7 +24,8 @@
     "run:recompute": "node scripts/recompute-metrics.mjs",
     "run:recompute-checks": "node scripts/recompute-checks.mjs",
     "dashboard:app": "npm --prefix dashboard run build",
-    "dashboard": "node scripts/dashboard.mjs"
+    "dashboard": "node scripts/dashboard.mjs",
+    "test:unit": "vitest run"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",

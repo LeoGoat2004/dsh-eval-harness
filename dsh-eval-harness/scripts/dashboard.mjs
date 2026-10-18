@@ -57,7 +57,8 @@ const data = {
     tasks: report.totals.tasks,
     passed: report.totals.passed,
     failed: report.totals.failed,
-    errored: report.totals.errored,
+    ungraded: report.totals.ungraded,
+    executionErrors: report.totals.executionErrors,
     durationMs: report.totals.durationMs,
     totalTokens: report.totals.totalTokens,
     toolCalls: report.totals.toolCalls,
@@ -104,7 +105,16 @@ function buildTask(taskDir, directory) {
   const events = readOptionalEvents(join(taskDir, 'events.jsonl'))
   return {
     id,
-    status: taskInfo?.status ?? 'error',
+    // Display status derives from the orthogonal semantics; raw fields stay in
+    // the data contract so the UI can explain why a task is ungraded.
+    status:
+      taskInfo?.taskOutcome === 'passed'
+        ? 'passed'
+        : taskInfo?.taskOutcome === 'failed'
+          ? 'failed'
+          : 'error',
+    executionStatus: taskInfo?.executionStatus ?? 'not_started',
+    taskOutcome: taskInfo?.taskOutcome ?? 'ungraded',
     durationMs: taskInfo?.durationMs ?? 0,
     exitCode: taskInfo?.exitCode ?? null,
     timedOut: taskInfo?.timedOut ?? false,
