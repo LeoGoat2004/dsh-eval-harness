@@ -7,7 +7,7 @@ import type { BenchmarkManifest } from '../benchmark/manifest.ts'
 import { renderTemplate } from '../benchmark/manifest.ts'
 import { createLoopGuard, type LoopGuardLimits, type LoopGuardTrip } from './guard.ts'
 import { findSessionLog } from './profile.ts'
-import { parseJunit, type VerifyResult } from './verify.ts'
+import { parseJunit, type Check, type VerifyResult } from './verify.ts'
 
 /** One environment observation for container execution. */
 export interface ContainerCheck {
@@ -233,11 +233,12 @@ export async function runContainerEpisode(options: {
 
   let artifactError: string | undefined
   const artifactMounts: string[] = []
+  const writable = container.verifyWorkspace === 'read-write' ? '' : ':ro'
   if (agentOk) {
     // Snapshot the artifact directories so the verifier cannot touch the
     // agent's container and the agent cannot reach the grader.
     if (container.mountWorkspace !== false) {
-      artifactMounts.push('-v', options.workspaceDir + ':' + container.workspace + ':ro')
+      artifactMounts.push('-v', options.workspaceDir + ':' + container.workspace + writable)
     } else {
       const artifacts = container.artifacts ?? []
       if (artifacts.length === 0) {
@@ -256,7 +257,7 @@ export async function runContainerEpisode(options: {
           artifactError = 'container execution: artifact snapshot failed for ' + artifactPath + ': ' + lastLine(copy.stderr)
           return
         }
-        artifactMounts.push('-v', hostDir + ':' + artifactPath + ':ro')
+        artifactMounts.push('-v', hostDir + ':' + artifactPath + writable)
       })
     }
   }
@@ -430,6 +431,28 @@ async function runDockerPhase(options: {
   })
 }
 
+/**
+ * Parse per-test outcomes out of pytest's `-rA` text output. Container
+ * benchmarks that do not emit junit still get per-test checks, and a skipped
+ * test can never be counted as a pass.
+ * @param log - verifier stdout/stderr.
+ * @returns checks in report order.
+ */
+export function parsePytestText(log: string): Check[] {
+  const checks: Check[] = []
+  for (const line of log.split(/\r?\n/u)) {
+    const match = /^(PASSED|FAILED|ERROR|SKIPPED)\s+(?:\[\d+\]\s+)?(\S+)/u.exec(line.trim())
+    if (match === null) continue
+    const status = match[1]
+    checks.push({
+      id: match[2] as string,
+      pass: status === 'PASSED',
+      skipped: status === 'SKIPPED',
+    })
+  }
+  return checks
+}
+
 function readVerifier(
   verifyDir: string,
   format: 'junitxml' | 'pytest-text' | 'exit-code',
@@ -440,14 +463,17 @@ function readVerifier(
     return { ok: verifyExit === 0, passed: 0, total: 0, checks: [], logPath: verifyDir }
   }
   if (format === 'pytest-text') {
-    const passed = Number(/(\d+) passed/u.exec(log)?.[1] ?? '0')
-    const failed = Number(/(\d+) failed/u.exec(log)?.[1] ?? '0')
-    const total = passed + failed
+    const checks = parsePytestText(log)
+    const passed = checks.filter((check) => check.pass).length
+    const skipped = checks.filter((check) => check.skipped).length
+    const failed = checks.length - passed - skipped
+    const total = checks.length > 0 ? checks.length : passed + failed
     return {
-      ok: verifyExit === 0 && passed > 0 && failed === 0,
+      ok: verifyExit === 0 && passed > 0 && failed === 0 && skipped === 0,
       passed,
       total,
-      checks: [],
+      skipped,
+      checks,
       logPath: verifyDir,
       ...(total === 0 ? { error: 'verifier: no pytest summary found in container output' } : {}),
     }

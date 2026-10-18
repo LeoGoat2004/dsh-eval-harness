@@ -77,6 +77,12 @@ export interface BenchmarkManifest {
        * into the verifier container (required when workspace is not mounted).
        */
       readonly artifacts?: readonly string[]
+      /**
+       * Mount the verifier workspace read-only (default) or read-write. Writable
+       * is only needed by graders that build inside the workspace; the snapshot
+       * is disposable, so the agent container is never affected.
+       */
+      readonly verifyWorkspace?: 'read-only' | 'read-write'
       /** Extra mounts (templated). `source` is a host path. */
       readonly mounts?: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[]
       /** Container environment (templated; `{{env:NAME}}` reads the host env). */
@@ -291,6 +297,9 @@ function validateExecution(value: unknown, path: string): BenchmarkManifest['exe
         ? {}
         : { mountDshHome: container.mountDshHome === true }),
       ...(artifacts === undefined ? {} : { artifacts }),
+      ...(container.verifyWorkspace === undefined
+        ? {}
+        : { verifyWorkspace: requireVerifyWorkspace(container.verifyWorkspace) }),
       ...(mounts === undefined ? {} : { mounts }),
       ...(env === undefined ? {} : { env }),
       ...(verifyEnv === undefined ? {} : { verifyEnv }),
@@ -319,6 +328,14 @@ function parseEnvironment(
 }
 
 const VERIFY_RESULTS = new Set<string>(['junitxml', 'pytest-text', 'exit-code'])
+
+/** Validate the verifier workspace mount policy. */
+function requireVerifyWorkspace(value: unknown): 'read-only' | 'read-write' {
+  if (value !== 'read-only' && value !== 'read-write') {
+    throw new Error('manifest: execution.container.verifyWorkspace must be read-only or read-write')
+  }
+  return value
+}
 
 function requireVerifyResult(value: unknown): 'junitxml' | 'pytest-text' | 'exit-code' {
   if (typeof value !== 'string' || !VERIFY_RESULTS.has(value)) {
