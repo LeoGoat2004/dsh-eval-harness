@@ -11,6 +11,8 @@ export interface RunJob {
   runDir?: string
   reportPath?: string
   dashboardPath?: string
+  /** Set when dashboard generation failed; run evidence is still valid. */
+  dashboardError?: string
   totals?: unknown
   error?: string
 }
@@ -25,7 +27,14 @@ const jobs = new Map<string, RunJob>()
  * @returns the tracked job record (state `running`).
  */
 export function startRunJob(
-  run: () => Promise<{ runId: string; runDir: string; reportPath: string; totals: unknown; dashboardPath?: string }>,
+  run: () => Promise<{
+    runId: string
+    runDir: string
+    reportPath: string
+    totals: unknown
+    dashboardPath?: string
+    dashboardError?: string
+  }>,
 ): RunJob {
   const token = 'run-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
   const job: RunJob = { token, kind: 'evaluation', startedAt: Date.now(), state: 'running' }
@@ -38,6 +47,7 @@ export function startRunJob(
       job.runDir = summary.runDir
       job.reportPath = summary.reportPath
       job.dashboardPath = summary.dashboardPath
+      job.dashboardError = summary.dashboardError
       job.totals = summary.totals
     })
     .catch((error: unknown) => {

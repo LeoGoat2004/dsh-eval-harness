@@ -2,6 +2,7 @@ node_modules/
 packages/*/lib/
 packages/*/node_modules/
 dashboard/dist/
+packages/dsh-eval-harness/assets/dashboard/index.html
 *.tsbuildinfo
 coverage/
 .DS_Store

@@ -1,14 +1,12 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { existsSync } from 'node:fs'
-import { dirname, resolve as resolvePath } from 'node:path'
-import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { Config } from '../config.ts'
 import { resolveCredential } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
+import { generateDashboard } from '../report/dashboard.ts'
 import { startRunJob } from '../run/jobs.ts'
 import { runEvaluation } from '../run/runner.ts'
 
@@ -170,8 +168,14 @@ export function createEvalRunTool(config: Config): ToolDefinition {
           manifestPath: input.manifestPath,
           guard: { maxSteps: input.maxSteps, maxIdenticalToolCalls: input.maxIdenticalToolCalls },
         })
-        const dashboardPath = generateDashboard(summary.runDir)
-        return dashboardPath === undefined ? summary : { ...summary, dashboardPath }
+        try {
+          const dashboard = await generateDashboard(summary.runDir)
+          return { ...summary, dashboardPath: dashboard.dashboard }
+        } catch (error) {
+          // A dashboard failure must not invalidate run evidence, but it is an
+          // explicit, queryable warning rather than a silent omission.
+          return { ...summary, dashboardError: String(error) }
+        }
       })
       return {
         token: job.token,
@@ -188,18 +192,6 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       }
     },
   })
-}
-
-/** Generate the standalone dashboard for one run; undefined when unavailable. */
-function generateDashboard(runDir: string): string | undefined {
-  const packageRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), '..', '..')
-  const workspaceRoot = resolvePath(packageRoot, '..', '..')
-  const script = resolvePath(workspaceRoot, 'scripts', 'dashboard.mjs')
-  const dist = resolvePath(workspaceRoot, 'dashboard', 'dist', 'index.html')
-  if (!existsSync(script) || !existsSync(dist)) return undefined
-  spawnSync(process.execPath, [script, '--run', runDir], { encoding: 'utf8' })
-  const html = resolvePath(runDir, 'dashboard', 'index.html')
-  return existsSync(html) ? html : undefined
 }
 
 /** Resolve a profile argument to an existing profile directory. */

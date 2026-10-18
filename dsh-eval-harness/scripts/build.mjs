@@ -1,6 +1,6 @@
 // Build the bundle package with tsc and verify the published entry exists.
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { BUNDLE_DIR, WORKSPACE_ROOT } from './registry.mjs'
 
@@ -37,5 +37,26 @@ const entry = join(BUNDLE_DIR, 'lib', 'index.js')
 if (!existsSync(entry)) {
   console.error('build: tsc produced no ' + entry)
   process.exit(1)
+}
+
+// Ship the dashboard app inside the plugin package: `eval_run` resolves the
+// template from `<package>/assets/dashboard/index.html`.
+const dashboardApp = join(WORKSPACE_ROOT, 'dashboard')
+const dashboardDist = join(dashboardApp, 'dist', 'index.html')
+if (!existsSync(dashboardDist) && existsSync(join(dashboardApp, 'node_modules'))) {
+  spawnSync('npm', ['--prefix', dashboardApp, 'run', 'build'], {
+    cwd: WORKSPACE_ROOT,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  })
+}
+const assetDir = join(BUNDLE_DIR, 'assets', 'dashboard')
+const assetTemplate = join(assetDir, 'index.html')
+if (existsSync(dashboardDist)) {
+  mkdirSync(assetDir, { recursive: true })
+  copyFileSync(dashboardDist, assetTemplate)
+  console.log('[build] ' + assetTemplate)
+} else {
+  console.warn('[build] dashboard template missing; run `npm --prefix dashboard install && npm run dashboard:app`')
 }
 console.log('[build] ' + entry)

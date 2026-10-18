@@ -23,6 +23,7 @@ export interface EvalStatus {
     runDir?: string
     reportPath?: string
     dashboardPath?: string
+    dashboardError?: string
     error?: string
   }[]
 }
@@ -82,7 +83,8 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
                 runId: { type: 'string' },
                 runDir: { type: 'string' },
                 reportPath: { type: 'string' },
-        dashboardPath: { type: 'string' },
+                dashboardPath: { type: 'string' },
+                dashboardError: { type: 'string' },
                 error: { type: 'string' },
               },
             },
@@ -112,6 +114,7 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
           ...(job.runDir === undefined ? {} : { runDir: job.runDir }),
           ...(job.reportPath === undefined ? {} : { reportPath: job.reportPath }),
       ...(job.dashboardPath === undefined ? {} : { dashboardPath: job.dashboardPath }),
+      ...(job.dashboardError === undefined ? {} : { dashboardError: job.dashboardError }),
           ...(job.error === undefined ? {} : { error: job.error }),
         })),
       }
