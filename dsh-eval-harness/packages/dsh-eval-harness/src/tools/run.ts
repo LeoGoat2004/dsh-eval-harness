@@ -177,7 +177,12 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       env[target.apiKeyEnv] = credential
       env.DSH_PERMISSION_MODE = input.permissionMode
       const startedAt = Date.now()
-      const job = startRunJob(async () => {        const summary = await runEvaluation({
+      // Persist job records under the configured output root so eval_status can
+      // find them even when this run used a custom outputDir.
+      const jobsDir =
+        config.outputRoot === '' ? join(outputDir, 'jobs') : join(resolve(config.outputRoot), 'jobs')
+      const job = startRunJob(async () => {
+        const summary = await runEvaluation({
           benchmarkRoot,
           benchmarkRevision: input.revision,
           language: input.language,
@@ -204,7 +209,7 @@ export function createEvalRunTool(config: Config): ToolDefinition {
           // explicit, queryable warning rather than a silent omission.
           return { ...summary, dashboardError: String(error) }
         }
-      }, { persistDir: join(outputDir, 'jobs') })
+      }, { persistDir: jobsDir, outputDir })
       return {
         token: job.token,
         state: 'running',

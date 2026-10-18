@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BenchmarkTask } from '../benchmark/interpreter.ts'
 import type { BenchmarkManifest } from '../benchmark/manifest.ts'
@@ -296,9 +296,14 @@ export async function runContainerEpisode(options: {
   const writable = container.verifyWorkspace === 'read-write' ? '' : ':ro'
   if (agentOk) {
     // Snapshot the artifact directories so the verifier cannot touch the
-    // agent's container and the agent cannot reach the grader.
+    // agent's container and the agent cannot reach the grader. The verifier
+    // always gets a disposable copy: the agent's output stays the evidence.
     if (container.mountWorkspace !== false) {
-      artifactMounts.push('-v', options.workspaceDir + ':' + container.workspace + writable)
+      const snapshot = join(options.verifyDir, 'workspace-snapshot')
+      rmSync(snapshot, { recursive: true, force: true })
+      mkdirSync(snapshot, { recursive: true })
+      cpSync(options.workspaceDir, snapshot, { recursive: true, force: true })
+      artifactMounts.push('-v', snapshot + ':' + container.workspace + writable)
     } else {
       const artifacts = container.artifacts ?? []
       if (artifacts.length === 0) {
@@ -317,7 +322,11 @@ export async function runContainerEpisode(options: {
           artifactError = 'container execution: artifact snapshot failed for ' + artifactPath + ': ' + lastLine(copy.stderr)
           return
         }
-        artifactMounts.push('-v', hostDir + ':' + artifactPath + writable)
+        // Verify on a copy so a writable grader cannot rewrite the evidence.
+        const verifierCopy = join(options.verifyDir, 'artifacts', String(index))
+        rmSync(verifierCopy, { recursive: true, force: true })
+        cpSync(hostDir, verifierCopy, { recursive: true, force: true })
+        artifactMounts.push('-v', verifierCopy + ':' + artifactPath + writable)
       })
     }
   }

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -493,8 +493,14 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
 
 /** Build the run id: benchmark, language, task count, UTC timestamp. */
 function createRunId(spec: RunSpec, benchmarkName: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z')
-  return benchmarkName.toLowerCase().replace(/[^a-z0-9]+/gu, '-') + '__' + spec.language + spec.taskIds.length + '__' + stamp
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/gu, '')
+    .replace(/\.(\d{3})Z$/u, '$1Z')
+  // Millisecond timestamp plus a random suffix: two runs of the same shape in
+  // the same second must never share a directory.
+  const suffix = randomBytes(3).toString('hex')
+  return benchmarkName.toLowerCase().replace(/[^a-z0-9]+/gu, '-') + '__' + spec.language + spec.taskIds.length + '__' + stamp + '-' + suffix
 }
 
 function summarize(summaries: readonly TaskSummary[], durationMs: number): RunSummary['totals'] {

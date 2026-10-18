@@ -1,6 +1,6 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Config } from '../config.ts'
 import { getRunJob, listRunJobs } from '../run/jobs.ts'
 
@@ -98,7 +98,7 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
     },
     execute: async (args): Promise<EvalStatus> => {
       const input = args as { readonly token?: string }
-      const persistDir = config.outputRoot === '' ? undefined : join(config.outputRoot, 'jobs')
+      const persistDir = config.outputRoot === '' ? undefined : join(resolve(config.outputRoot), 'jobs')
       const jobs =
         input.token === undefined
           ? listRunJobs(persistDir)

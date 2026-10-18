@@ -373,8 +373,12 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
           '      - source: "{{taskDir}}"',
           '        target: /task',
           '        readOnly: true',
+          ...(options.verifyWorkspaceRw ? ['    verifyWorkspace: read-write'] : []),
           '    agentCommand: ' + JSON.stringify(agentCommand),
-          '    verifyCommand: [python, -m, pytest, /task/tests/test_out.py, --junitxml=/dsh-verify/junit.xml, -q]',
+          '    verifyCommand: ' +
+            JSON.stringify(
+              options.verifyCommand ?? ['python', '-m', 'pytest', '/task/tests/test_out.py', '--junitxml=/dsh-verify/junit.xml', '-q'],
+            ),
           '',
         ].join('\n'),
       )
@@ -435,6 +439,24 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
       exposedGrader.graderVisibility.exposedToAgent.includes('/task'),
       'grader visibility audit must report the exposed verifier mount',
     )
+
+    // A writable verifier must never rewrite the agent's evidence.
+    const isolatedVerify = await variant(
+      'verify-isolated',
+      ['bash', '-lc', 'echo agent-wrote > /workspace/out.txt'],
+      {
+        verifyWorkspaceRw: true,
+        verifyCommand: ['bash', '-lc', 'echo tampered > /workspace/tampered.txt'],
+      },
+    )
+    const agentOut = join(workDir, 'container-verify-isolated', 'workspace')
+    check(existsSync(join(agentOut, 'out.txt')), 'agent output must stay in the preserved workspace')
+    check(!existsSync(join(agentOut, 'tampered.txt')), 'verifier must not write into the preserved workspace')
+    check(
+      existsSync(join(workDir, 'container-verify-isolated', 'verify', 'workspace-snapshot', 'tampered.txt')),
+      'writable verifier must write into its disposable snapshot',
+    )
+    check(isolatedVerify.verify.ok === false, 'a verifier without a junit report is not a passing grade')
   }
 }
 
