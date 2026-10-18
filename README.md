@@ -31,14 +31,19 @@ Set `<profile>` to your DSH profile name (usually `desktop`), then restart DSH.
 ## Usage
 
 1. **`eval_preflight`** — confirm the Harness, the model and the benchmark; check the declared
-   environment requirements; audit the profile for isolation risks. It returns a `planDigest` that
-   pins the confirmed setup.
+   environment requirements; audit the profile for isolation risks. It returns a content-addressed
+   `planDigest` covering the manifest, the confirmed profile, the benchmark checkout and the
+   non-secret model route.
 2. **`eval_manifest`** — validate the benchmark manifest; optionally run its red/green check
    (a stub must fail, the official reference must pass).
 3. **`eval_run`** — start the evaluation in the background. It requires the `planDigest` from
-   preflight, and runs either the confirmed profile as a frozen snapshot (`profile-snapshot`) or
-   the fixed minimal control arm (`minimal-control`).
+   preflight and refuses to run if the confirmed content changed. The harness under test is
+   `faithful-snapshot` (profile used verbatim), `isolated-snapshot` (isolation/model rows added,
+   mutation diff recorded; `profile-snapshot` remains an alias) or the fixed `minimal-control`.
+   In container mode the agent and the verifier are separate containers: the verifier only sees a
+   disposable artifact copy, and the report records a grader visibility audit.
 4. **`eval_status`** — check progress and get the run directory, report path and dashboard path.
+   Job records survive a restart; a job that was running is reported as `interrupted`.
 
 The report is written to `<run-dir>/dashboard/index.html` and is also produced from an installed
 package, not only from a development checkout.
