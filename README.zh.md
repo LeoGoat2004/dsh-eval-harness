@@ -40,6 +40,7 @@ dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
    （manifest `verifyRetries`，0–3）。
 4. **`eval_status`** —— 查询进度，获取 run 目录、报告路径与看板路径。
    job 记录跨重启保留；重启时仍在 running 的 job 会显示为 `interrupted`。
+   对使用自定义 outputDir 的 run，传 `outputDir` 即可读取该目录下的 job 记录。
 
 报告写在 `<run-dir>/dashboard/index.html`；安装后的插件同样能生成看板，不依赖开发目录。
 

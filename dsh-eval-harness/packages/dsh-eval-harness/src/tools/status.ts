@@ -45,6 +45,11 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
         type: 'string',
         description: 'Optional job token returned by eval_run; omit to list all tracked jobs.',
       },
+      outputDir: {
+        type: 'string',
+        description:
+          'Optional run output directory; reads job records from <outputDir>/jobs (needed when eval_run used a custom outputDir).',
+      },
     },
     output: {
       schema: {
@@ -97,8 +102,15 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
       ],
     },
     execute: async (args): Promise<EvalStatus> => {
-      const input = args as { readonly token?: string }
-      const persistDir = config.outputRoot === '' ? undefined : join(resolve(config.outputRoot), 'jobs')
+      const input = args as { readonly token?: string; readonly outputDir?: string }
+      // An explicit outputDir wins over the plugin config so jobs started with a
+      // custom output directory remain queryable after a restart.
+      const persistDir =
+        input.outputDir !== undefined && input.outputDir !== ''
+          ? join(resolve(input.outputDir), 'jobs')
+          : config.outputRoot === ''
+            ? undefined
+            : join(resolve(config.outputRoot), 'jobs')
       const jobs =
         input.token === undefined
           ? listRunJobs(persistDir)

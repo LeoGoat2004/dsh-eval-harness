@@ -5,7 +5,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadManifest, manifestRequirements } from '../benchmark/manifest.ts'
 import { digestPlan } from '../run/plan.ts'
-import type { HarnessMode } from '../run/profile.ts'
+import {
+  INTERACTIVE_APP_BUNDLE_NAMES,
+  readProfileBundles,
+  type HarnessMode,
+} from '../run/profile.ts'
 import { credentialPresent } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
 import { auditHarnessProfile } from '../run/environment-audit.ts'
@@ -250,6 +254,18 @@ export function createEvalPreflightTool(): ToolDefinition {
           detail: probeById.get(requirement.id)?.detail ?? '',
         }))
       const credential = { env: target.apiKeyEnv, present: credentialPresent(target.apiKeyEnv) }
+      if (input.harnessMode === 'faithful-snapshot') {
+        const interactive = readProfileBundles(profileDir).filter((bundle) =>
+          INTERACTIVE_APP_BUNDLE_NAMES.includes(bundle),
+        )
+        if (interactive.length > 0) {
+          throw new Error(
+            'eval_preflight: faithful-snapshot cannot run an interactive profile (boots ' +
+              interactive.join(', ') +
+              '); use isolated-snapshot or a headless profile',
+          )
+        }
+      }
       const audit = auditHarnessProfile(profileDir)
       const ready = missing.length === 0 && credential.present
       const plan = {

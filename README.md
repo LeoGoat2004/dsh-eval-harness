@@ -45,7 +45,8 @@ Set `<profile>` to your DSH profile name (usually `desktop`), then restart DSH.
    disposable artifact copy, and the report records a grader visibility audit. A transient verifier
    bootstrap failure is retried once when it leaves no usable judgement (`verifyRetries`, 0–3).
 4. **`eval_status`** — check progress and get the run directory, report path and dashboard path.
-   Job records survive a restart; a job that was running is reported as `interrupted`.
+   Job records survive a restart; a job that was running is reported as `interrupted`. Pass
+   `outputDir` to read job records from a run started with a custom output directory.
 
 The report is written to `<run-dir>/dashboard/index.html` and is also produced from an installed
 package, not only from a development checkout.

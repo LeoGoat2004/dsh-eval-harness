@@ -152,18 +152,18 @@ describe('materializeProfile', () => {
     expect(materialized.snapshot.mutationDiff.removedBundles).toEqual(['@deepseek-ai/dsh-web-app'])
   })
 
-  it('faithful mode never appends the headless app', () => {
+  it('faithful mode refuses an interactive profile with a clear error', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-eval-snapshot-'))
     const source = sourceProfile(root, '1')
     writeFileSync(
       join(source, 'package.json'),
       JSON.stringify({ name: 'fixture', dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } } }),
     )
-    const materialized = materializeProfile(join(root, 'home'), 'eval', target(), {
-      mode: 'faithful-snapshot',
-      sourceProfileDir: source,
-    })
-    expect(materialized.snapshot.effectiveBundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
-    expect(materialized.snapshot.mutationDiff.addedBundles).toEqual([])
+    expect(() =>
+      materializeProfile(join(root, 'home'), 'eval', target(), {
+        mode: 'faithful-snapshot',
+        sourceProfileDir: source,
+      }),
+    ).toThrow('interactive profile')
   })
 })

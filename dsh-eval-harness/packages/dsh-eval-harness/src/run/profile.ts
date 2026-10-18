@@ -220,6 +220,16 @@ function materializeSnapshot(
   if (bundles.length === 0) {
     throw new Error(mode + ': source profile declares no dsh.profile.bundles')
   }
+  if (mode === 'faithful-snapshot') {
+    const interactive = bundles.filter((bundle) => INTERACTIVE_APP_BUNDLES.includes(bundle))
+    if (interactive.length > 0) {
+      throw new Error(
+        'faithful-snapshot cannot run an interactive profile (boots ' +
+          interactive.join(', ') +
+          '); use isolated-snapshot or a headless profile',
+      )
+    }
+  }
   const sourceCordis = readIfExists(join(sourceProfileDir, 'cordis.yml')) ?? '[]\n'
   const sourcePatch = readIfExists(join(sourceProfileDir, 'cordis.patch.yml')) ?? ''
   const baseRows = sourcePatch.trim() === '' ? [] : parseYaml(sourcePatch)
@@ -380,6 +390,19 @@ function patchRowIds(rows: readonly unknown[]): string[] {
     if (isObject(row) && typeof row.id === 'string') ids.push(row.id)
   }
   return ids
+}
+
+/** Interactive app bundles a confirmed profile may declare. */
+export const INTERACTIVE_APP_BUNDLE_NAMES = ['@deepseek-ai/dsh-web-app']
+
+/** Read the bundles a profile declares (empty when unreadable). */
+export function readProfileBundles(profileDir: string): string[] {
+  try {
+    const pkg = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as Record<string, unknown>
+    return readBundles(pkg)
+  } catch {
+    return []
+  }
 }
 
 /** Read `dsh.profile.bundles` from a profile package.json. */
