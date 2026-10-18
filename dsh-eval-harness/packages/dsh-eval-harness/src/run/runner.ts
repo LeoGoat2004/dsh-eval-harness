@@ -1,7 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadBenchmarkFromManifest } from '../benchmark/interpreter.ts'
+import type { BenchmarkTask } from '../benchmark/interpreter.ts'
 import { loadManifest } from '../benchmark/manifest.ts'
 import {
   findSessionLog,
@@ -45,6 +48,8 @@ export interface RunSpec {
   readonly model: ModelTarget
   /** Declarative benchmark manifest; every run names its benchmark explicitly. */
   readonly manifestPath: string
+  /** eval_preflight digest this run was started from, when started through the tools. */
+  readonly planDigest?: string
   /** Which harness arm is evaluated: the user's profile snapshot or the minimal control. */
   readonly harnessMode: HarnessMode
   /** Source profile directory; required for `profile-snapshot`. */
@@ -71,6 +76,8 @@ export interface TaskSummary {
   readonly observedModel: { readonly provider: string; readonly model: string } | null
   /** Trace rows whose payload mentions the user home directory (isolation leak). */
   readonly homeLeaks: readonly { readonly seq: number; readonly type: string }[]
+  /** SHA-256 over the prompt and solution/test file contents seen by the task. */
+  readonly inputDigest?: string
   /** Set when the loop guard stopped this episode. */
   readonly guard: LoopGuardTrip | null
   readonly error?: string
@@ -92,6 +99,37 @@ export interface RunSummary {
     readonly durationMs: number
     readonly totalTokens: number
     readonly toolCalls: number
+  }
+}
+
+/** Where one task failed when an unexpected exception escaped the loop body. */
+type TaskPhase = 'setup' | 'episode' | 'verify' | 'complete'
+
+/**
+ * Build a summary for a task whose loop body threw, keeping the run alive.
+ * @param task - benchmark task.
+ * @param taskDir - artifact directory for the task.
+ * @param phase - phase reached before the exception.
+ * @param error - thrown value.
+ * @returns a summary with explicit executionStatus and ungraded outcome.
+ */
+function taskFailureSummary(task: BenchmarkTask, taskDir: string, phase: TaskPhase, error: unknown): TaskSummary {  const executionStatus =
+    phase === 'setup' ? 'not_started' : phase === 'episode' ? 'agent_crashed' : 'verifier_error'
+  return {
+    id: task.id,
+    dir: taskDir,
+    executionStatus,
+    taskOutcome: 'ungraded',
+    exitCode: null,
+    timedOut: false,
+    durationMs: 0,
+    sessionLog: null,
+    metrics: null,
+    verify: null,
+    observedModel: null,
+    homeLeaks: [],
+    guard: null,
+    error: 'task: ' + String(error),
   }
 }
 
@@ -169,12 +207,16 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
 
   writeJson(join(runDir, 'run.json'), {
     runId,
+    planDigest: spec.planDigest ?? null,
     benchmark: benchmark.name,
     benchmarkRevision: benchmark.revision,
+    benchmarkGit: readGitState(spec.benchmarkRoot),
     manifestPath: spec.manifestPath ?? null,
+    manifestSha256: sha256(readFileSync(spec.manifestPath, 'utf8')),
     language: benchmark.language,
     tasks: [...benchmark.tasks.map((task) => task.id)],
     dshVersion: spec.dshVersion,
+    dshVersionActual: readDshVersionSafe(spec.dshBin),
     dshBin: spec.dshBin,
     profile: profile.profileName,
     harness: profile.snapshot,
@@ -194,10 +236,14 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     const workspaceDir = join(taskDir, 'workspace')
     const traceDir = join(taskDir, 'trace')
     mkdirSync(taskDir, { recursive: true })
-    // The manifest owns prompt assembly; the executor passes it through untouched.
-    const prompt = task.prompt
-    writeFileSync(join(taskDir, 'prompt.md'), prompt)
     mkdirSync(join(taskDir, 'agent'), { recursive: true })
+    let phase: TaskPhase = 'setup'
+    try {
+      phase = 'episode'
+      // The manifest owns prompt assembly; the executor passes it through untouched.
+      const prompt = task.prompt
+      writeFileSync(join(taskDir, 'prompt.md'), prompt)
+      const inputDigest = digestTaskInput(task)
     let episode: {
       exitCode: number | null
       timedOut: boolean
@@ -279,6 +325,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     }
 
     const sessionLog = findSessionLog(traceDir)
+    phase = 'verify'
     let metrics: TraceMetrics | null = null
     let traceError: string | undefined
     let observedModel: TaskSummary['observedModel'] = null
@@ -324,6 +371,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       observedModel,
       homeLeaks,
       guard: episode.guard,
+      inputDigest,
       ...(status.error === undefined ? {} : { error: status.error }),
     }
     summaries.push(summary)
@@ -338,9 +386,22 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       observedModel: summary.observedModel,
       homeLeaks: summary.homeLeaks,
       guard: summary.guard,
+      ...(summary.inputDigest === undefined ? {} : { inputDigest: summary.inputDigest }),
       checks: { passed: verify.passed, total: verify.total, ok: verify.ok },
       ...(summary.error === undefined ? {} : { error: summary.error }),
     })
+    } catch (error) {
+      // One task must never abort the whole run: record the failure, keep going,
+      // and let the final report describe the partial batch.
+      const summary = taskFailureSummary(task, taskDir, phase, error)
+      summaries.push(summary)
+      writeJson(join(taskDir, 'task.json'), {
+        id: summary.id,
+        executionStatus: summary.executionStatus,
+        taskOutcome: summary.taskOutcome,
+        error: summary.error,
+      })
+    }
   }
 
   const totals = summarize(summaries, Date.now() - startedAt)
@@ -384,6 +445,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
       durationMs: summary.durationMs,
       metrics: summary.metrics,
       guard: summary.guard,
+      ...(summary.inputDigest === undefined ? {} : { inputDigest: summary.inputDigest }),
       checks: summary.verify === null ? null : { passed: summary.verify.passed, total: summary.verify.total, ok: summary.verify.ok },
       ...(summary.error === undefined ? {} : { error: summary.error }),
     })),
@@ -641,6 +703,68 @@ function validateSpec(spec: RunSpec): void {
     if (spec.harnessProfileDir === undefined || !existsSync(spec.harnessProfileDir)) {
       throw new Error('run: profile-snapshot requires harnessProfileDir to exist')
     }
+  }
+  // A declared version must match the installed launcher; a mismatch means the
+  // report would describe a different Harness than the one that ran.
+  if (/^\d+\.\d+/u.test(spec.dshVersion)) {
+    const actual = readDshVersionSafe(spec.dshBin)
+    if (actual !== 'unknown' && actual !== spec.dshVersion) {
+      throw new Error('run: declared dshVersion ' + spec.dshVersion + ' but the launcher is ' + actual)
+    }
+  }
+  // A pinned commit must match the checkout; symbolic revisions are allowed.
+  if (/^[0-9a-f]{7,40}$/u.test(spec.benchmarkRevision)) {
+    const git = readGitState(spec.benchmarkRoot)
+    if (git.available && git.head !== undefined && !git.head.startsWith(spec.benchmarkRevision)) {
+      throw new Error(
+        'run: benchmark revision ' + spec.benchmarkRevision + ' does not match checkout HEAD ' + git.head,
+      )
+    }
+  }
+}
+
+/** SHA-256 over the prompt and the declared solution/test files. */
+function digestTaskInput(task: BenchmarkTask): string {
+  const files: Record<string, string> = {}
+  for (const name of [...task.solutionFiles, ...task.testFiles]) {
+    try {
+      files[name] = sha256(readFileSync(join(task.exerciseDir, name), 'utf8'))
+    } catch {
+      files[name] = 'missing'
+    }
+  }
+  return sha256(
+    JSON.stringify({ prompt: task.prompt, solutionFiles: task.solutionFiles, testFiles: task.testFiles, files }),
+  )
+}
+
+/** SHA-256 hex digest of one string. */
+function sha256(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
+}
+
+/** Read the installed dsh version without failing when the layout is unknown. */
+function readDshVersionSafe(dshBin: string): string {
+  try {
+    return readDshVersion(dshBin)
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** Read the benchmark checkout's git HEAD and dirty state when it is a repo. */
+function readGitState(root: string): { available: boolean; head?: string; dirty?: boolean } {
+  try {
+    const head = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true })
+    if (head.status !== 0 || typeof head.stdout !== 'string' || head.stdout.trim() === '') return { available: false }
+    const status = spawnSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true })
+    return {
+      available: true,
+      head: head.stdout.trim(),
+      dirty: status.status === 0 && typeof status.stdout === 'string' ? status.stdout.trim() !== '' : undefined,
+    }
+  } catch {
+    return { available: false }
   }
 }
 

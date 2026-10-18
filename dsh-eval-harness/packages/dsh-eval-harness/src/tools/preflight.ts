@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadManifest, manifestRequirements } from '../benchmark/manifest.ts'
+import { planDigest } from '../run/plan.ts'
 import { credentialPresent } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
 import { auditHarnessProfile } from '../run/environment-audit.ts'
@@ -30,6 +31,8 @@ export interface EvalPreflightResult {
     benchmark: { name: string; language: string; revision: string; tasks: string[] }
   }
   ready: boolean
+  /** Immutable digest of the confirmed plan; required by eval_run. */
+  planDigest?: string
   requirements: PreflightRequirement[]
   probe: EnvironmentProbe[]
   missing: { id: string; reason: string; detail: string }[]
@@ -122,6 +125,7 @@ export function createEvalPreflightTool(): ToolDefinition {
             },
           },
           ready: { type: 'boolean', required: true },
+          planDigest: { type: 'string' },
           requirements: {
             type: 'array',
             required: true,
@@ -232,23 +236,36 @@ export function createEvalPreflightTool(): ToolDefinition {
       const credential = { env: target.apiKeyEnv, present: credentialPresent(target.apiKeyEnv) }
       const audit = auditHarnessProfile(profileDir)
       const ready = missing.length === 0 && credential.present
-      return {
-        plan: {
-          harness: { profile: profileDir, dshVersion: input.dshVersion, mode: input.harnessMode },
-          model: {
-            provider: target.provider,
-            model: target.model,
-            api: target.api ?? '',
-            baseURL: target.baseURL ?? '',
-            apiKeyEnv: target.apiKeyEnv,
-          },
-          benchmark: {
-            name: manifest.name,
-            language: input.language,
-            revision: input.revision,
-            tasks: [...input.tasks],
-          },
+      const plan = {
+        harness: { profile: profileDir, dshVersion: input.dshVersion, mode: input.harnessMode },
+        model: {
+          provider: target.provider,
+          model: target.model,
+          api: target.api ?? '',
+          baseURL: target.baseURL ?? '',
+          apiKeyEnv: target.apiKeyEnv,
         },
+        benchmark: {
+          name: manifest.name,
+          language: input.language,
+          revision: input.revision,
+          tasks: [...input.tasks],
+        },
+      }
+      return {
+        plan,
+        // eval_run must present this digest; it recomputes it from its own inputs.
+        planDigest: planDigest({
+          harnessProfileDir: profileDir,
+          harnessMode: input.harnessMode as 'profile-snapshot' | 'minimal-control',
+          dshVersion: input.dshVersion,
+          provider: target.provider,
+          model: target.model,
+          manifestPath: input.manifestPath,
+          language: input.language,
+          revision: input.revision,
+          tasks: input.tasks,
+        }),
         ready,
         requirements: requirements.map((requirement) => ({
           id: requirement.id,

@@ -7,6 +7,7 @@ import type { Config } from '../config.ts'
 import { resolveCredential } from '../model/credentials.ts'
 import { resolveModelTarget } from '../model/target.ts'
 import { generateDashboard } from '../report/dashboard.ts'
+import { planDigest } from '../run/plan.ts'
 import { startRunJob } from '../run/jobs.ts'
 import { runEvaluation } from '../run/runner.ts'
 
@@ -61,6 +62,11 @@ export function createEvalRunTool(config: Config): ToolDefinition {
         required: true,
         description: 'profile-snapshot（复制并运行用户确认的 profile）或 minimal-control（固定最小对照）',
       },
+      planDigest: {
+        type: 'string',
+        required: true,
+        description: 'eval_preflight 返回的 planDigest；用于拒绝确认后被篡改的配置',
+      },
     },
     output: {
       schema: {
@@ -114,6 +120,7 @@ export function createEvalRunTool(config: Config): ToolDefinition {
         readonly maxIdenticalToolCalls: number
         readonly permissionMode: string
         readonly harnessMode: string
+        readonly planDigest: string
       }
       if (config.dshBin === '') {
         throw new Error(
@@ -128,6 +135,20 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       }
       const profileDir = resolveProfileDir(input.harnessProfile)
       const target = resolveModelTarget(profileDir, input.provider, input.model)
+      const expectedDigest = planDigest({
+        harnessProfileDir: profileDir,
+        harnessMode: input.harnessMode as 'profile-snapshot' | 'minimal-control',
+        dshVersion: input.dshVersion,
+        provider: target.provider,
+        model: target.model,
+        manifestPath: input.manifestPath,
+        language: input.language,
+        revision: input.revision,
+        tasks: input.tasks,
+      })
+      if (input.planDigest !== expectedDigest) {
+        throw new Error('eval_run: planDigest does not match the confirmed plan; re-run eval_preflight')
+      }
       const credential = resolveCredential(target.apiKeyEnv)
       if (credential === null) {
         throw new Error(
@@ -149,8 +170,7 @@ export function createEvalRunTool(config: Config): ToolDefinition {
       env[target.apiKeyEnv] = credential
       env.DSH_PERMISSION_MODE = input.permissionMode
       const startedAt = Date.now()
-      const job = startRunJob(async () => {
-        const summary = await runEvaluation({
+      const job = startRunJob(async () => {        const summary = await runEvaluation({
           benchmarkRoot,
           benchmarkRevision: input.revision,
           language: input.language,
@@ -166,6 +186,7 @@ export function createEvalRunTool(config: Config): ToolDefinition {
           env,
           model: target,
           manifestPath: input.manifestPath,
+          planDigest: input.planDigest,
           guard: { maxSteps: input.maxSteps, maxIdenticalToolCalls: input.maxIdenticalToolCalls },
         })
         try {
@@ -176,7 +197,7 @@ export function createEvalRunTool(config: Config): ToolDefinition {
           // explicit, queryable warning rather than a silent omission.
           return { ...summary, dashboardError: String(error) }
         }
-      })
+      }, { persistDir: join(outputDir, 'jobs') })
       return {
         token: job.token,
         state: 'running',

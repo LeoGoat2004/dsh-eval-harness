@@ -1,5 +1,6 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { join } from 'node:path'
 import type { Config } from '../config.ts'
 import { getRunJob, listRunJobs } from '../run/jobs.ts'
 
@@ -97,10 +98,11 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
     },
     execute: async (args): Promise<EvalStatus> => {
       const input = args as { readonly token?: string }
+      const persistDir = config.outputRoot === '' ? undefined : join(config.outputRoot, 'jobs')
       const jobs =
         input.token === undefined
-          ? listRunJobs()
-          : [getRunJob(input.token)].filter((job): job is NonNullable<typeof job> => job !== undefined)
+          ? listRunJobs(persistDir)
+          : [getRunJob(input.token, persistDir)].filter((job): job is NonNullable<typeof job> => job !== undefined)
       return {
         plugin: 'dsh-eval-harness',
         config: { outputRoot: config.outputRoot, dshBin: config.dshBin },
@@ -113,8 +115,8 @@ export function createEvalStatusTool(config: Config): ToolDefinition {
           ...(job.runId === undefined ? {} : { runId: job.runId }),
           ...(job.runDir === undefined ? {} : { runDir: job.runDir }),
           ...(job.reportPath === undefined ? {} : { reportPath: job.reportPath }),
-      ...(job.dashboardPath === undefined ? {} : { dashboardPath: job.dashboardPath }),
-      ...(job.dashboardError === undefined ? {} : { dashboardError: job.dashboardError }),
+          ...(job.dashboardPath === undefined ? {} : { dashboardPath: job.dashboardPath }),
+          ...(job.dashboardError === undefined ? {} : { dashboardError: job.dashboardError }),
           ...(job.error === undefined ? {} : { error: job.error }),
         })),
       }
