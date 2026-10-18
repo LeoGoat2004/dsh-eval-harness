@@ -10,6 +10,26 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { readDshVersion, runEvaluation } from '../packages/dsh-eval-harness/lib/run/runner.js'
 import { createLoopGuard } from '../packages/dsh-eval-harness/lib/run/guard.js'
+
+/** Remove the fixture; container-created trace files are root-owned on Linux. */
+function removeFixture(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+    return
+  } catch {
+    // Fall through to a root-side chmod using the fixture image.
+  }
+  spawnSync(
+    'docker',
+    ['run', '--rm', '-v', dir + ':/cleanup', 'dsh-eval-fixture:py', 'sh', '-c', 'chmod -R a+rwX /cleanup'],
+    { stdio: 'ignore' },
+  )
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch (error) {
+    console.warn('WARN: could not remove fixture directory: ' + String(error))
+  }
+}
 import { parseJunit } from '../packages/dsh-eval-harness/lib/run/verify.js'
 import {
   builtinManifestPath,
@@ -96,7 +116,7 @@ try {
   })
 } catch (error) {
   console.error('PIPELINE SELF-CHECK FAIL: runEvaluation threw: ' + String(error))
-  rmSync(workDir, { recursive: true, force: true })
+  removeFixture(workDir)
   process.exit(1)
 }
 
@@ -520,7 +540,7 @@ try {
 }
 check(refused, 'a missing model credential must fail preflight before any episode')
 
-if (process.env.DSH_EVAL_KEEP_FIXTURE !== '1') rmSync(workDir, { recursive: true, force: true })
+if (process.env.DSH_EVAL_KEEP_FIXTURE !== '1') removeFixture(workDir)
 if (failures.length > 0) {
   console.error('PIPELINE SELF-CHECK FAIL')
   for (const failure of failures) console.error('  - ' + failure)
