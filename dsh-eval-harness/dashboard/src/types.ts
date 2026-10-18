@@ -86,7 +86,7 @@ export interface TaskData {
   }
 }
 
-export type FindingLayer = 'harness' | 'environment' | 'benchmark' | 'adapter'
+export type FindingLayer = 'model' | 'harness' | 'environment' | 'benchmark' | 'adapter' | 'unknown'
 
 export interface Finding {
   readonly kind: string

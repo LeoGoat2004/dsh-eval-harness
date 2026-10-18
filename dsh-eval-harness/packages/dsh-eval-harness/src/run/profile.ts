@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, sym
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
-import { parse as parseYaml } from 'yaml'
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { BenchmarkTask } from '../benchmark/interpreter.ts'
 import type { ModelTarget } from '../model/target.ts'
 import { createLoopGuard, type LoopGuardLimits, type LoopGuardTrip } from './guard.ts'
@@ -171,9 +171,17 @@ function materializeSnapshot(
   }
   const sourceCordis = readIfExists(join(sourceProfileDir, 'cordis.yml')) ?? '[]\n'
   const sourcePatch = readIfExists(join(sourceProfileDir, 'cordis.patch.yml')) ?? ''
-  const appendedRows = evalRows(target).join('\n')
-  const patchText = sourcePatch.trim() === '' ? appendedRows : sourcePatch.trimEnd() + '\n' + appendedRows
-  parseYaml(patchText) // fail fast when the source patch is not valid YAML
+  const baseRows = sourcePatch.trim() === '' ? [] : parseYaml(sourcePatch)
+  if (!Array.isArray(baseRows)) {
+    throw new Error('profile-snapshot: source cordis.patch.yml must contain a YAML sequence')
+  }
+  const appendedRows = parseYaml(evalRows(target).join('\n'))
+  if (!Array.isArray(appendedRows)) {
+    throw new Error('profile-snapshot: internal eval rows did not parse as a sequence')
+  }
+  // Merge by parsing both sides: appending raw text to an empty flow sequence
+  // (`[]`) would produce invalid YAML.
+  const patchText = stringifyYaml([...baseRows, ...appendedRows])
   writeJson(join(profileDir, 'package.json'), {
     ...sourcePackage,
     name: 'dsh-profile-' + profileName,

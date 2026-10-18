@@ -29,7 +29,12 @@ const taskDirs = readdirSync(tasksDir, { withFileTypes: true })
   .sort()
 
 const tasks = taskDirs.map((directory) => buildTask(join(tasksDir, directory), directory))
-const findings = deriveFindings(tasks)
+// Core diagnostics live in report.json; the dashboard only presents them. The
+// trace-based derivation is a fallback for runs that predate the field.
+const findings =
+  Array.isArray(report.diagnostics) && report.diagnostics.length > 0
+    ? findingsFromDiagnostics(report.diagnostics)
+    : deriveFindings(tasks)
 const computedIsolation = computeIsolation(tasks)
 const isolation = computedIsolation.clean ? (report.isolation ?? computedIsolation) : computedIsolation
 const data = {
@@ -186,6 +191,7 @@ function deriveFindings(tasks) {
           note: classification.note,
           label,
           count: 0,
+          confidence: confidenceOf(classification.confidence),
           tasks: new Set(),
         }
       group.count += 1
@@ -202,8 +208,40 @@ function deriveFindings(tasks) {
       label: group.label,
       count: group.count,
       tasks: [...group.tasks],
-      confidence: 'confirmed',
+      confidence: group.confidence ?? 'unresolved',
     }))
+}
+
+/**
+ * Map core diagnostics into the dashboard's finding shape.
+ * @param diagnostics - report.json diagnostics.
+ * @returns grouped display findings.
+ */
+function findingsFromDiagnostics(diagnostics) {
+  return diagnostics.map((diagnostic) => {
+    const evidence = Array.isArray(diagnostic.evidence) ? diagnostic.evidence : []
+    const tasks = [...new Set(evidence.map((item) => item.taskId).filter((id) => typeof id === 'string'))]
+    return {
+      kind: diagnostic.kind,
+      layer: diagnostic.layer,
+      note: diagnostic.note,
+      label: diagnostic.note,
+      count: Math.max(1, evidence.length),
+      tasks,
+      confidence: confidenceOf(diagnostic.confidence),
+    }
+  })
+}
+
+/**
+ * Map core confidence vocabulary to the dashboard's display vocabulary.
+ * @param confidence - core confidence value.
+ * @returns display confidence.
+ */
+function confidenceOf(confidence) {
+  if (confidence === 'confirmed') return 'confirmed'
+  if (confidence === 'unaligned' || confidence === 'unresolved') return 'unresolved'
+  return 'suspicious'
 }
 
 /**

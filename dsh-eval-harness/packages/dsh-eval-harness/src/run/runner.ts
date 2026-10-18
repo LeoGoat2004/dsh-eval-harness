@@ -22,6 +22,7 @@ import {
 } from './container.ts'
 import { probeRequirements, type EnvironmentProbe, type EnvironmentRequirement } from './environment.ts'
 import { classifyTaskStatus, type ExecutionStatus, type TaskOutcome } from './status.ts'
+import { deriveDiagnostics } from './diagnostics.ts'
 import type { ModelTarget } from '../model/target.ts'
 import type { LoopGuardLimits, LoopGuardTrip } from './guard.ts'
 import { runManifestVerifier, type VerifyResult } from './verify.ts'
@@ -343,6 +344,10 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
   }
 
   const totals = summarize(summaries, Date.now() - startedAt)
+  const diagnostics = deriveDiagnostics(summaries, {
+    provider: spec.model.provider,
+    model: spec.model.model,
+  })
   writeFileSync(
     join(runDir, 'tasks.jsonl'),
     summaries
@@ -371,6 +376,7 @@ export async function runEvaluation(spec: RunSpec): Promise<RunSummary> {
     environment: { recorded: true, ...preflight.environment },
     modelVerification: summarizeModelVerification(spec.model, summaries),
     isolation: summarizeIsolation(summaries),
+    diagnostics,
     tasks: summaries.map((summary) => ({
       id: summary.id,
       executionStatus: summary.executionStatus,

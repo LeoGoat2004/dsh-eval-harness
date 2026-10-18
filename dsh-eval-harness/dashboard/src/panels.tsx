@@ -584,10 +584,12 @@ function LegendItem(props: { readonly color: string; readonly label: string; rea
 }
 
 const LAYER_META = {
+  model: { label: '模型', color: 'grape', description: '模型侧' },
   harness: { label: '框架', color: 'red', description: 'DSH Harness 侧' },
   environment: { label: '环境', color: 'orange', description: '评测环境侧' },
   benchmark: { label: '基准', color: 'blue', description: 'Benchmark 侧' },
   adapter: { label: '适配器', color: 'gray', description: '适配器侧' },
+  unknown: { label: '未定性', color: 'dark', description: '证据不足，不下结论' },
 } as const
 
 function FindingRow({ finding }: { readonly finding: Finding }): JSX.Element {
@@ -605,6 +607,9 @@ function FindingRow({ finding }: { readonly finding: Finding }): JSX.Element {
           <Text size="sm" c="dimmed" truncate>
             {finding.tasks.join(', ')}
           </Text>
+          <Badge size="xs" variant="light" color={finding.confidence === 'confirmed' ? 'red' : 'gray'} style={{ flex: 'none' }}>
+            {finding.confidence}
+          </Badge>
         </Group>
         <Badge size="sm" color="red" variant="light" style={{ flex: 'none' }}>
           ×{finding.count}
