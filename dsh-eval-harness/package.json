@@ -19,13 +19,15 @@
     "test:import": "node scripts/diag-import.mjs",
     "test:mount": "node scripts/diag-mount.mjs",
     "test:pipeline": "node scripts/diag-pipeline.mjs",
-    "check": "npm run typecheck && npm run build && npm test",
+    "check": "npm run typecheck && npm run build && npm test && npm run test:pack",
     "run:eval": "node scripts/run-eval.mjs",
     "run:recompute": "node scripts/recompute-metrics.mjs",
     "run:recompute-checks": "node scripts/recompute-checks.mjs",
     "dashboard:app": "npm --prefix dashboard run build",
     "dashboard": "node scripts/dashboard.mjs",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "test:integration": "node scripts/diag-integration.mjs",
+    "test:pack": "node scripts/test-pack.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",

@@ -19,14 +19,45 @@ import {
   renderTemplate,
 } from '../packages/dsh-eval-harness/lib/benchmark/manifest.js'
 import { loadBenchmarkFromManifest } from '../packages/dsh-eval-harness/lib/benchmark/interpreter.js'
-import { validateManifest } from '../packages/dsh-eval-harness/lib/benchmark/validate.js'
 
 const root = resolve(import.meta.dirname, '..')
-const benchmarkRoot = resolve(process.argv[2] ?? join(root, '..', 'benchmarks', 'aider-polyglot'))
 const realDsh = join(root, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 const workDir = mkdtempSync(join(tmpdir(), 'dsh-eval-pipeline-'))
 const stubLauncher = join(workDir, 'stub-dsh.mjs')
 writeFileSync(stubLauncher, 'process.exit(7)\n')
+
+// Hermetic benchmark fixture: the default self-check must not need a local
+// benchmark checkout, Python or Docker. Only Node is required.
+const benchRoot = join(workDir, 'bench')
+const fixtureTaskDir = join(benchRoot, 'node', 'task-1')
+mkdirSync(fixtureTaskDir, { recursive: true })
+writeFileSync(join(fixtureTaskDir, 'prompt.md'), 'write a file')
+const hermeticManifest = join(workDir, 'manifest.yml')
+writeFileSync(
+  hermeticManifest,
+  [
+    'schema: 1',
+    'name: pipeline-fixture',
+    'tasks:',
+    '  discovery: directory',
+    '  root: "{{language}}"',
+    '  exclude: []',
+    'prompt:',
+    '  files:',
+    '    - path: prompt.md',
+    '  template: "{{prompt}}"',
+    'verify:',
+    '  command: [node, -e, "process.exit(0)"]',
+    '  result: junitxml',
+    'environment:',
+    '  requirements:',
+    '    - id: node',
+    '      command: node',
+    '      args: [--version]',
+    '      reason: hermetic pipeline self-check needs Node',
+    '',
+  ].join('\n'),
+)
 
 const failures = []
 const check = (condition, message) => {
@@ -47,12 +78,12 @@ const guard = { maxSteps: 200, maxIdenticalToolCalls: 5 }
 let summary
 try {
   summary = await runEvaluation({
-    benchmarkRoot,
+    benchmarkRoot: benchRoot,
     benchmarkRevision: 'pipeline-self-check',
-    language: 'python',
-    taskIds: ['transpose'],
+    language: 'node',
+    taskIds: ['task-1'],
     dshBin: stubLauncher,
-    manifestPath: builtinManifestPath('aider-polyglot'),
+    manifestPath: hermeticManifest,
     harnessMode: 'minimal-control',
     dshVersion: readDshVersion(realDsh),
     outputDir: join(workDir, 'runs'),
@@ -94,7 +125,7 @@ if (existsSync(preflightPath) && existsSync(runPath)) {
   )
   check(
     (preflight.environment?.requirements ?? []).every((item) => item.ok === true),
-    'python and pytest requirements must pass in this environment',
+    'fixture requirements must pass in this environment',
   )
   check(run.environment?.recorded === true, 'run.json must mark the environment as recorded')
   check(run.environment?.sandbox === 'workspace-write', 'run.json must record the sandbox mode')
@@ -187,32 +218,8 @@ try {
 }
 check(manifestRejected, 'manifest loader must reject an unsupported schema')
 
-// When a benchmark checkout is available locally, prove the manifest
-// interpreter materializes a real task (prompt, file names, excludes).
-if (existsSync(benchmarkRoot)) {
-  const loadedBenchmark = await loadBenchmarkFromManifest(preset, benchmarkRoot, 'python', ['transpose'], 'self-check')
-  const task = loadedBenchmark.tasks[0]
-  check(loadedBenchmark.name === 'aider-polyglot', 'interpreter must carry the manifest name')
-  check(task?.id === 'transpose', 'interpreter must materialize the requested task id')
-  check(task?.solutionFiles.includes('transpose.py') === true, 'interpreter must read solution files from task meta')
-  check(task?.testFiles.length >= 1, 'interpreter must read test files from task meta')
-  check(task?.exclude.includes(task.testFiles[0]) === true, 'test files must be excluded from the agent workspace')
-  check((task?.prompt.length ?? 0) > 100, 'interpreter must assemble a non-trivial prompt')
-
-  // Red/green: a stub workspace must fail and the official reference must pass.
-  const redGreen = await validateManifest({
-    loaded: preset,
-    root: benchmarkRoot,
-    language: 'python',
-    taskIds: ['transpose'],
-    timeoutMs: 120_000,
-  })
-  check(redGreen.ok === true, 'red/green validation must pass for the built-in preset')
-  check(
-    redGreen.results.every((result) => result.redOk && result.greenOk),
-    'red must fail on the stub and green must pass with the reference solution',
-  )
-}
+// Red/green and real-benchmark interpretation live in the integration script
+// (`npm run test:integration`) because they need an external checkout.
 
 // Optional container-execution check (opt-in: needs Docker + network for the
 // fixture image). The executor is benchmark-agnostic: the fixture manifest only
@@ -317,12 +324,12 @@ if (process.env.DSH_EVAL_DOCKER_TESTS === '1') {
 let refused = false
 try {
   await runEvaluation({
-    benchmarkRoot,
+    benchmarkRoot: benchRoot,
     benchmarkRevision: 'pipeline-self-check',
-    language: 'python',
-    taskIds: ['transpose'],
+    language: 'node',
+    taskIds: ['task-1'],
     dshBin: stubLauncher,
-    manifestPath: builtinManifestPath('aider-polyglot'),
+    manifestPath: hermeticManifest,
     harnessMode: 'minimal-control',
     dshVersion: readDshVersion(realDsh),
     outputDir: join(workDir, 'runs-refused'),
