@@ -2,13 +2,29 @@
 
 [English](README.md) | 中文
 
-面向 DSH 的评测插件：用你确认过的 DSH Harness 跑 benchmark。它按声明式 manifest 执行 benchmark，
-保留完整 session trace，与 benchmark 自带的验证器对齐，并生成独立的 HTML 报告，说明这次运行
-失败在哪一步、归因到哪一层：模型、Harness、benchmark 还是环境。
+面向 DSH 的评测插件：用已确认的 DSH Harness 配置跑 benchmark。它按声明式 manifest 执行 benchmark，
+保留完整 session trace，与 benchmark 自带的验证器对齐，并生成独立的 HTML 报告，说明运行失败在哪一步、
+归因到哪一层：模型、Harness、benchmark 还是环境。
+
+## 评测了什么
+
+一次 run 的对象是冻结的 DSH Harness 配置；benchmark 分数只是输出之一，不是结果的全部。
+
+| 维度 | 记录 / 判定 |
+|---|---|
+| 被测 Harness | dsh 版本、profile bundle 栈、patch rows、模型 route；隔离与 app bundle 改动记录在 `mutationDiff`，整份计划由 `planDigest` 内容寻址 |
+| 任务结果 | 只以 benchmark 自带验证器为准（junit / pytest-text / exit-code）。评分前的失败记为 `executionStatus`（超时、guard 终止、agent 崩溃、trace 损坏、verifier 错误），不计为任务失败 |
+| 运行行为 | 完整 session trace（steps、tool call/result、重试、subagent）、token/时间/工具指标、loop guard 与超时 |
+| 故障归因 | 每条诊断带 `layer`（model / harness / benchmark / environment / adapter / unknown）、`confidence`（confirmed / probable / possible / unresolved）与证据指针（任务、事件序号、artifact、规则）；无法识别的失败保持 `unknown` |
+| Harness 与任务 | 同一 benchmark 可用 `faithful-snapshot`（原样）、`isolated-snapshot`（隔离行、交互 app 换 headless、记录 mutation diff）或 `minimal-control`（固定 base + headless）运行对照 |
+| 可复现性 | 实测 dsh 版本、benchmark git HEAD/dirty、manifest SHA-256、profile 哈希、容器镜像 digest；容器运行拆分 agent 与 verifier，在一次性副本上验证，并记录 grader 可见性审计 |
+| 产物 | `report.json` 与自包含的 `dashboard/index.html`：运行摘要、DSH 指标、benchmark 结果与逐任务 checks、诊断与 trace 指针 |
+
+一次 run 提供证据与线索；不做模型排名，也不从单次运行断言因果。
 
 ## 环境要求
 
-- DSH `0.2.1-rc.2`
+- DSH `0.2.1-rc.3`
 - Node.js `>= 22.19`
 - DSH profile 里已经配置好要评测的模型 provider
 - 本地有 benchmark 检出，以及描述它的 manifest；它的环境需求会在运行前检查
@@ -24,11 +40,11 @@ npm --prefix dsh-eval-harness run build
 dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 ```
 
-把 `<profile>` 换成你的 DSH profile 名（通常是 `desktop`），然后重启 DSH。
+把 `<profile>` 换成 DSH profile 名（通常是 `desktop`），然后重启 DSH。
 
 ## 使用流程
 
-1. **`eval_preflight`** —— 和你确认 Harness、模型与 benchmark；检查环境是否满足声明的需求；
+1. **`eval_preflight`** —— 确认 Harness、模型与 benchmark；检查环境是否满足声明的需求；
    审计 profile 的隔离风险。它返回内容寻址的 `planDigest`，覆盖 manifest、确认的 profile、
    benchmark 检出与不含密钥的模型 route。
 2. **`eval_manifest`** —— 校验 benchmark manifest；可选执行红绿检查（stub 必须失败，官方参考解必须通过）。

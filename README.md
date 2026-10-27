@@ -2,18 +2,36 @@
 
 English | [中文](README.zh.md)
 
-A DSH plugin for evaluating a DSH Harness you confirm. It runs a benchmark through a declarative
-manifest, keeps the full session trace, aligns it with the benchmark's own verifier, and writes a
-standalone HTML report that shows where a run failed and which layer owns the failure: model,
-Harness, benchmark, or environment.
+A DSH plugin that evaluates a confirmed DSH Harness configuration against a benchmark. It executes
+a benchmark through a declarative manifest, preserves the full session trace, aligns it with the
+benchmark's own verifier, and produces a standalone HTML report that identifies where a run failed
+and which layer owns the failure: model, Harness, benchmark, or environment.
+
+## What it evaluates
+
+The subject of a run is a frozen DSH Harness configuration; the benchmark score is one output, not
+the whole result.
+
+| Dimension | Recorded / judged |
+|---|---|
+| Harness under test | dsh version, profile bundle stack, patch rows and model route. Isolation and app-bundle mutations are recorded in `mutationDiff`; the plan is content-addressed by `planDigest`. |
+| Task outcome | The benchmark's own verifier (junit / pytest-text / exit-code). Failures before grading appear as `executionStatus` (timeout, guard stop, agent crash, corrupt trace, verifier error) and are not counted as task failures. |
+| Execution behaviour | Full session trace (steps, tool calls and results, retries, subagents), token/time/tool metrics, loop-guard trips and timeouts. |
+| Failure attribution | Each diagnostic carries a `layer` (model / harness / benchmark / environment / adapter / unknown), a `confidence` (confirmed / probable / possible / unresolved) and evidence pointers (task, event sequence, artifact, rule). Unclassifiable failures remain `unknown`. |
+| Harness vs task | The same benchmark can run under `faithful-snapshot` (verbatim), `isolated-snapshot` (hermetic rows, interactive app swapped for headless, mutation diff recorded) or `minimal-control` (fixed base + headless). |
+| Reproducibility | Measured dsh version, benchmark git HEAD/dirty, manifest SHA-256, profile hashes and container image digests. Container runs split the agent and the verifier, verify on disposable copies, and record a grader-visibility audit. |
+| Output | `report.json` and a self-contained `dashboard/index.html`: run summary, DSH metrics, benchmark results and per-task checks, diagnostics with confidence, and trace pointers. |
+
+A run provides evidence and clues. It does not rank models, and a single run does not establish
+causality.
 
 ## Requirements
 
-- DSH `0.2.1-rc.2`
+- DSH `0.2.1-rc.3`
 - Node.js `>= 22.19`
-- A DSH profile with the model provider you want to evaluate already configured
-- A local benchmark checkout plus a manifest describing it; its environment requirements are
-  checked before a run
+- A DSH profile that already has the model provider under test configured
+- A local benchmark checkout and a manifest describing it; the manifest's environment requirements
+  are checked before a run
 
 ## Install
 
@@ -26,7 +44,7 @@ npm --prefix dsh-eval-harness run build
 dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 ```
 
-Set `<profile>` to your DSH profile name (usually `desktop`), then restart DSH.
+Replace `<profile>` with the DSH profile name (usually `desktop`), then restart DSH.
 
 ## Usage
 
