@@ -35,6 +35,22 @@ causality.
 
 ## Install
 
+### From a GitHub release (no npm account)
+
+```bash
+dsh plugin --profile <profile> add https://github.com/LeoGoat2004/dsh-eval-harness/releases/download/v0.1.0/dsh-eval-harness-0.1.0.tgz
+```
+
+`<profile>` depends on the host:
+
+- **DSH Desktop**: the CLI rejects the desktop profile; use Plugins → Add plugin and paste the URL.
+- **`dsh web`**: `--profile web`
+- **headless**: `--profile headless`
+
+Restart DSH after installation.
+
+### From source
+
 ```bash
 git clone <repository-url>
 cd dsh-eval-harness
@@ -44,7 +60,7 @@ npm --prefix dsh-eval-harness run build
 dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 ```
 
-Replace `<profile>` with the DSH profile name (usually `desktop`), then restart DSH.
+The same profile rules apply, then restart DSH.
 
 ## Usage
 

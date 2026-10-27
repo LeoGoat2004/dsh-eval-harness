@@ -31,6 +31,22 @@
 
 ## 安装
 
+### 从 GitHub Release 安装（不需要 npm 账号）
+
+```bash
+dsh plugin --profile <profile> add https://github.com/LeoGoat2004/dsh-eval-harness/releases/download/v0.1.0/dsh-eval-harness-0.1.0.tgz
+```
+
+`<profile>` 按宿主选择：
+
+- **DSH Desktop**：CLI 会拒绝 desktop profile；用 插件 → 添加插件，粘贴上面的 URL。
+- **`dsh web`**：`--profile web`
+- **headless**：`--profile headless`
+
+安装后重启 DSH。
+
+### 从源码安装
+
 ```bash
 git clone <repository-url>
 cd dsh-eval-harness
@@ -40,7 +56,7 @@ npm --prefix dsh-eval-harness run build
 dsh plugin --profile <profile> add ./dsh-eval-harness/packages/dsh-eval-harness
 ```
 
-把 `<profile>` 换成 DSH profile 名（通常是 `desktop`），然后重启 DSH。
+profile 规则同上，安装后重启 DSH。
 
 ## 使用流程
 
